@@ -560,6 +560,9 @@ static int audit_callback(void *data, security_class_t /*cls*/, char *buf, size_
 }
 
 static void selinux_initialize(bool in_kernel_domain) {
+    // Disable in Mer
+    return;
+
     Timer t;
 
     selinux_callback cb;
