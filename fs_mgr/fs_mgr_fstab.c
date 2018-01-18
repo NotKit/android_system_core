@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/mount.h>
 #include <unistd.h>
 
@@ -33,7 +39,6 @@ struct fs_mgr_flag_values {
     int swap_prio;
     unsigned int zram_size;
     unsigned int file_encryption_mode;
-    unsigned int zram_streams;
 };
 
 struct flag_list {
@@ -73,15 +78,16 @@ static struct flag_list fs_mgr_flags[] = {
     { "recoveryonly",MF_RECOVERYONLY },
     { "swapprio=",   MF_SWAPPRIO },
     { "zramsize=",   MF_ZRAMSIZE },
-    { "verifyatboot", MF_VERIFYATBOOT },
     { "verify",      MF_VERIFY },
     { "noemulatedsd", MF_NOEMULATEDSD },
     { "notrim",       MF_NOTRIM },
     { "formattable", MF_FORMATTABLE },
     { "slotselect",  MF_SLOTSELECT },
     { "nofail",      MF_NOFAIL },
+#ifdef MTK_FSTAB_FLAGS
+    { "resize",      MF_RESIZE },
+#endif
     { "latemount",   MF_LATEMOUNT },
-    { "zramstreams=",MF_ZRAMSTREAMS },
     { "defaults",    0 },
     { 0,             0 },
 };
@@ -108,6 +114,108 @@ static uint64_t calculate_zram_size(unsigned int percentage)
     return total;
 }
 
+#define MAX_SUP_PART 32
+#ifdef MTK_EMMC_SUPPORT
+	static struct {
+		char name[16];
+		int number;
+	} emmc_part_map[MAX_SUP_PART];
+
+	static int emmc_part_count = -1;
+	static void find_emmc_partitions(void)
+	{
+		int fd;
+		char buf[1024];
+		char *pemmcbufp;
+		ssize_t pemmcsize;
+		int r;
+
+		printf("%s: emmc_part_count=%d \n", __func__, emmc_part_count);
+
+		fd = open("/proc/emmc", O_RDONLY);
+		if (fd < 0)
+			return;
+	
+		buf[sizeof(buf) - 1] = '\0';
+		pemmcsize = read(fd, buf, sizeof(buf) - 1);
+		pemmcbufp = buf;
+		while (pemmcsize > 0) {
+			int partno, start_sect, nr_sects;
+			char partition_name[16];
+			partition_name[0] = '\0';
+			partno = -1;
+			r = sscanf(pemmcbufp, "emmc_p%d: %x %x %15s",
+					   &partno, &start_sect, &nr_sects, partition_name);
+			if ((r == 4) && (partition_name[0] == '"')) {
+				char *x = strchr(partition_name + 1, '"');
+				if (x) {
+					*x = 0;
+				}
+				printf("emmc partition %d, %s\n", partno, partition_name + 1);
+				if (emmc_part_count < MAX_SUP_PART) {
+					strcpy(emmc_part_map[emmc_part_count].name, partition_name + 1);
+					emmc_part_map[emmc_part_count].number = partno;
+					emmc_part_count++;
+				} else {
+					printf("too many emmc partitions\n");
+				}
+			}
+			while (pemmcsize > 0 && *pemmcbufp != '\n') {
+				pemmcbufp++;
+				pemmcsize--;
+			}
+			if (pemmcsize > 0) {
+				pemmcbufp++;
+				pemmcsize--;
+			}
+		}
+		close(fd);
+	}
+	
+	int emmc_name_to_number(const char *name)
+	{
+		int n;
+		if (emmc_part_count < 0) {
+			emmc_part_count = 0;
+			find_emmc_partitions();
+		}
+		for (n = 0; n < emmc_part_count; n++) {
+			if (!strcmp(name, emmc_part_map[n].name)) {
+				return emmc_part_map[n].number;
+			}
+		}
+		return -1;
+	}
+#endif
+
+#include <stdlib.h>
+static int get_boot_mode(void)
+{
+  int fd;
+  ssize_t s;
+  char boot_mode[4] = {'0'};
+  char boot_mode_sys_path[] = "/sys/class/BOOT/BOOT/boot/boot_mode";
+
+  fd = open(boot_mode_sys_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0)
+  {
+    ERROR("fail to open %s: %s", boot_mode_sys_path, strerror(errno));
+    return 0;
+  }
+
+  s = read(fd, boot_mode, sizeof(boot_mode) - 1);
+  close(fd);
+
+  if(s <= 0)
+  {
+    ERROR("could not read boot mode sys file: %s", strerror(errno));
+    return 0;
+  }
+
+  boot_mode[s] = '\0';
+  return atoi(boot_mode);
+}
+
 static int parse_flags(char *flags, struct flag_list *fl,
                        struct fs_mgr_flag_values *flag_vals,
                        char *fs_options, int fs_options_len)
@@ -123,7 +231,6 @@ static int parse_flags(char *flags, struct flag_list *fl,
         memset(flag_vals, 0, sizeof(*flag_vals));
         flag_vals->partnum = -1;
         flag_vals->swap_prio = -1; /* negative means it wasn't specified. */
-        flag_vals->zram_streams = 1;
     }
 
     /* initialize fs_options to the null string */
@@ -201,7 +308,18 @@ static int parse_flags(char *flags, struct flag_list *fl,
                         part_start = strchr(p, ':') + 1;
                         if (!strcmp(part_start, "auto")) {
                             flag_vals->partnum = -1;
-                        } else {
+                        } 
+                        #ifdef MTK_EMMC_SUPPORT
+                        else if (!strncmp(part_start, "emmc@", 5)) {
+                           int n = emmc_name_to_number(part_start + 5);
+                           if (n < 0) {
+                               ERROR("eMMC: can NOT find FAT partition via name mapping, part=%s.\n", part_start);
+                               n = -1;
+                           }
+                           flag_vals->partnum = n;
+                        }
+                        #endif
+                        else {
                             flag_vals->partnum = strtol(part_start, NULL, 0);
                         }
                     } else {
@@ -216,8 +334,6 @@ static int parse_flags(char *flags, struct flag_list *fl,
                         flag_vals->zram_size = calculate_zram_size(val);
                     else
                         flag_vals->zram_size = val;
-                } else if ((fl[i].flag == MF_ZRAMSTREAMS) && flag_vals) {
-                    flag_vals->zram_streams = strtoll(strchr(p, '=') + 1, NULL, 0);
                 }
                 break;
             }
@@ -245,6 +361,24 @@ static int parse_flags(char *flags, struct flag_list *fl,
         fs_options[strlen(fs_options) - 1] = '\0';
     }
 
+    if (fl ==fs_mgr_flags) {
+        if (f & (MF_CRYPT | MF_FORCECRYPT)) {
+            int f_backup = f;
+
+            if (f & MF_FORCECRYPT) {
+                int mt_boot_mode  = get_boot_mode();
+                if (mt_boot_mode != 0) {
+                   f &= (~MF_FORCECRYPT);
+                   f |= MF_CRYPT;
+                   NOTICE("%s: bootmode(%d) is NOT normal mode, disable 'default encrytion', flag=(0x%x -> 0x%x) \n",
+                           __FUNCTION__, mt_boot_mode, f_backup, f);
+                }
+                else {
+                   // normal mode
+                }
+            }
+        }
+    }
     return f;
 }
 
@@ -370,7 +504,6 @@ struct fstab *fs_mgr_read_fstab(const char *fstab_path)
         fstab->recs[cnt].swap_prio = flag_vals.swap_prio;
         fstab->recs[cnt].zram_size = flag_vals.zram_size;
         fstab->recs[cnt].file_encryption_mode = flag_vals.file_encryption_mode;
-        fstab->recs[cnt].zram_streams = flag_vals.zram_streams;
         cnt++;
     }
     /* If an A/B partition, modify block device to be the real block device */

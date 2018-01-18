@@ -58,7 +58,6 @@ public:
     struct timespec mTimeout;
     const bool mNonBlock;
     const uint64_t mEnd; // only relevant if mNonBlock
-
     // Protect List manipulations
     static void lock(void) { pthread_mutex_lock(&timesLock); }
     static void unlock(void) { pthread_mutex_unlock(&timesLock); }
@@ -73,6 +72,7 @@ public:
     }
 
     void triggerSkip_Locked(log_id_t id, unsigned int skip) { skipAhead[id] = skip; }
+    unsigned int getSkipAhead(log_id_t id) { return skipAhead[id]; }
     void cleanSkip_Locked(void);
 
     // These called after LogTimeEntry removed from list, lock implicitly held

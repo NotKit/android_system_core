@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2005 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,6 +42,13 @@
 
 // compile with refcounting debugging enabled
 #define DEBUG_REFS                      0
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef BUILD_SHARED
+#undef DEBUG_REFS
+#define DEBUG_REFS                      1
+#endif
+#endif
 
 // whether ref-tracking is enabled by default, if not, trackMe(true, false)
 // needs to be called explicitly
@@ -174,7 +186,10 @@ public:
                 char inc = refs->ref >= 0 ? '+' : '-';
                 ALOGD("\t%c ID %p (ref %d):", inc, refs->id, refs->ref);
 #if DEBUG_REFS_CALLSTACK_ENABLED
+#ifdef MTK_AOSP_ENHANCEMENT
+#else
                 refs->stack.log(LOG_TAG);
+#endif
 #endif
                 refs = refs->next;
             }
@@ -188,7 +203,10 @@ public:
                 char inc = refs->ref >= 0 ? '+' : '-';
                 ALOGD("\t%c ID %p (ref %d):", inc, refs->id, refs->ref);
 #if DEBUG_REFS_CALLSTACK_ENABLED
+#ifdef MTK_AOSP_ENHANCEMENT
+#else
                 refs->stack.log(LOG_TAG);
+#endif
 #endif
                 refs = refs->next;
             }
@@ -222,6 +240,10 @@ public:
         renameRefsId(mStrongRefs, old_id, new_id);
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    void addWeakRef(const void* /*id*/) { }
+    void removeWeakRef(const void* /*id*/) { }
+#else
     void addWeakRef(const void* id) {
         addRef(&mWeakRefs, id, mWeak.load(std::memory_order_relaxed));
     }
@@ -233,6 +255,7 @@ public:
             addRef(&mWeakRefs, id, -mWeak.load(std::memory_order_relaxed));
         }
     }
+#endif
 
     void renameWeakRefId(const void* old_id, const void* new_id) {
         renameRefsId(mWeakRefs, old_id, new_id);

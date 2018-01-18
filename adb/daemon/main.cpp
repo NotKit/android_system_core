@@ -64,6 +64,9 @@ static void drop_capabilities_bounding_set_if_needed() {
 }
 
 static bool should_drop_privileges() {
+#ifdef MTK_ALLOW_ADBD_ROOT
+    return false;
+#endif
 #if defined(ALLOW_ADBD_ROOT)
     char value[PROPERTY_VALUE_MAX];
 
@@ -143,11 +146,15 @@ static void drop_privileges(int server_port) {
         // minijail_enter() will abort if any priv-dropping step fails.
         minijail_enter(jail.get());
 
+#ifdef MTK_ALLOW_ADBD_ROOT
+        D("MTK_ALLOW_ADBD_ROOT enabled\n");
+#else
         if (root_seclabel != nullptr) {
             if (selinux_android_setcon(root_seclabel) < 0) {
                 LOG(FATAL) << "Could not set SELinux context";
             }
         }
+#endif
         std::string error;
         std::string local_name =
             android::base::StringPrintf("tcp:%d", server_port);
@@ -224,10 +231,6 @@ int adbd_main(int server_port) {
     return 0;
 }
 
-#if !ADB_HOST
-int recovery_mode = 0;
-#endif
-
 int main(int argc, char** argv) {
     while (true) {
         static struct option opts[] = {
@@ -259,8 +262,6 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-
-    recovery_mode = (strcmp(adb_device_banner, "recovery") == 0);
 
     close_stdin();
 

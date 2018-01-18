@@ -4,21 +4,11 @@
 # This is a common source of Android security bugs.
 #
 
-# this file is only necessary if your device is 32 bit and it is
-# using the android kernel logger if your device is 64 bit defining
-# LD_LIBRARY_PATH will break some binaries, since you cannot have both
-# 32 bit libraries and 64 bit libraries in your LD_LIBRARY_PATH.
-import /init.extraenv.${ro.product.cpu.abi}.rc
 import /init.environ.rc
-# Mer handles usb stuff
-#import /init.usb.rc
+import /init.usb.rc
 import /init.${ro.hardware}.rc
 import /init.usb.configfs.rc
 import /init.${ro.zygote}.rc
-
-# Include CM's extra init file
-import /init.cm.rc
-
 
 on early-init
     # Set init and its forked children's oom_adj.
@@ -36,7 +26,7 @@ on early-init
     # Set the security context of /postinstall if present.
     restorecon /postinstall
 
-    #start ueventd
+    start ueventd
 
 on init
     sysclktz 0
@@ -46,10 +36,7 @@ on init
     copy /default.prop /dev/urandom
 
     # Backward compatibility.
-    #symlink /system/etc /etc
-
-    loglevel 64
-
+    symlink /system/etc /etc
     symlink /sys/kernel/debug /d
 
     # Link /vendor to /system/vendor for devices without a vendor partition.
@@ -64,22 +51,18 @@ on init
     mount cgroup none /dev/stune schedtune
     mkdir /dev/stune/foreground
     mkdir /dev/stune/background
-    mkdir /dev/stune/system-background
     mkdir /dev/stune/top-app
     chown system system /dev/stune
     chown system system /dev/stune/foreground
     chown system system /dev/stune/background
-    chown system system /dev/stune/system-background
     chown system system /dev/stune/top-app
     chown system system /dev/stune/tasks
     chown system system /dev/stune/foreground/tasks
     chown system system /dev/stune/background/tasks
-    chown system system /dev/stune/system-background/tasks
     chown system system /dev/stune/top-app/tasks
     chmod 0664 /dev/stune/tasks
     chmod 0664 /dev/stune/foreground/tasks
     chmod 0664 /dev/stune/background/tasks
-    chmod 0664 /dev/stune/system-background/tasks
     chmod 0664 /dev/stune/top-app/tasks
 
     # Mount staging areas for devices managed by vold
@@ -115,17 +98,21 @@ on init
     symlink /storage/self/primary /mnt/sdcard
     symlink /mnt/user/0/primary /mnt/runtime/default/self/primary
 
+    # root memory control cgroup, used by lmkd
+    mkdir /dev/memcg 0700 root system
+    mount cgroup none /dev/memcg memory
+    # app mem cgroups, used by activity manager, lmkd and zygote
+    mkdir /dev/memcg/apps/ 0755 system system
+
     write /proc/sys/kernel/panic_on_oops 1
     write /proc/sys/kernel/hung_task_timeout_secs 0
-
-    #write /proc/cpu/alignment 4
+    write /proc/cpu/alignment 4
 
     # scheduler tunables
     # Disable auto-scaling of scheduler tunables with hotplug. The tunables
     # will vary across devices in unpredictable ways if allowed to scale with
     # cpu cores.
     write /proc/sys/kernel/sched_tunable_scaling 0
-
     write /proc/sys/kernel/sched_latency_ns 10000000
     write /proc/sys/kernel/sched_wakeup_granularity_ns 2000000
     write /proc/sys/kernel/sched_child_runs_first 0
@@ -157,6 +144,15 @@ on init
     chmod 0666 /dev/cpuctl/tasks
     write /dev/cpuctl/cpu.rt_period_us 1000000
     write /dev/cpuctl/cpu.rt_runtime_us 950000
+
+    mkdir /dev/cpuctl/bg_non_interactive
+    chown system system /dev/cpuctl/bg_non_interactive/tasks
+    chmod 0666 /dev/cpuctl/bg_non_interactive/tasks
+    # 5.0 %
+    write /dev/cpuctl/bg_non_interactive/cpu.shares 52
+    write /dev/cpuctl/bg_non_interactive/cpu.rt_period_us 1000000
+    # active FIFO threads will never be in BG
+    write /dev/cpuctl/bg_non_interactive/cpu.rt_runtime_us 10000
 
     # sets up initial cpusets for ActivityManager
     mkdir /dev/cpuset
@@ -228,8 +224,6 @@ on init
     mount pstore pstore /sys/fs/pstore
     chown system log /sys/fs/pstore/console-ramoops
     chmod 0440 /sys/fs/pstore/console-ramoops
-    chown system log /sys/fs/pstore/console-ramoops-0
-    chmod 0440 /sys/fs/pstore/console-ramoops-0
     chown system log /sys/fs/pstore/pmsg-ramoops-0
     chmod 0440 /sys/fs/pstore/pmsg-ramoops-0
 
@@ -240,7 +234,7 @@ on init
     # expecting it to point to /proc/self/fd
     symlink /proc/self/fd /dev/fd
 
-    export DOWNLOAD_CACHE ${ro.device.cache_dir}
+    export DOWNLOAD_CACHE /data/cache
 
     # set RLIMIT_NICE to allow priorities from 19 to -20
     setrlimit 13 40 40
@@ -304,10 +298,11 @@ on late-init
 on post-fs
     start logd
     # once everything is setup, no need to modify /
-
-    # mount rootfs rootfs / ro remount
-    # mount shared so changes propagate into child namespaces
-    # mount rootfs rootfs / shared rec
+    mount rootfs rootfs / ro remount
+    # Mount shared so changes propagate into child namespaces
+    mount rootfs rootfs / shared rec
+    # Mount default storage into root namespace
+    mount none /mnt/runtime/default /storage slave bind rec
 
     # Make sure /sys/kernel/debug (if present) is labeled properly
     restorecon_recursive /sys/kernel/debug
@@ -376,8 +371,7 @@ on post-fs-data
     # Fix the access permissions and group ownership for 'bt_config.conf'
     chmod 0660 /data/misc/bluedroid/bt_config.conf
     chown bluetooth net_bt_stack /data/misc/bluedroid/bt_config.conf
-    mkdir /data/misc/bluetooth 0770 bluetooth net_bt_stack
-    mkdir /data/misc/bluetooth/logs 0770 bluetooth net_bt_stack
+    mkdir /data/misc/bluetooth 0770 system system
     mkdir /data/misc/keystore 0700 keystore keystore
     mkdir /data/misc/gatekeeper 0700 system system
     mkdir /data/misc/keychain 0771 system system
@@ -487,9 +481,6 @@ on post-fs-data
 
     # Set SELinux security contexts on upgrade or policy update.
     restorecon_recursive /data
-    restorecon /data/data
-    restorecon /data/user
-    restorecon /data/user/0
 
     # Check any timezone data in /data is newer than the copy in /system, delete if not.
     exec - system system -- /system/bin/tzdatacheck /system/usr/share/zoneinfo /data/misc/zoneinfo
@@ -503,9 +494,8 @@ on post-fs-data
 on boot
     # basic network init
     ifup lo
-# Conflicts with Mer
-    #hostname localhost
-    #domainname localdomain
+    hostname localhost
+    domainname localdomain
 
     # Memory management.  Basic kernel parameters, and allow the high
     # level system server to be able to adjust the kernel OOM driver
@@ -570,11 +560,8 @@ on boot
     chown system system /sys/class/leds/button-backlight/brightness
     chown system system /sys/class/leds/jogball-backlight/brightness
     chown system system /sys/class/leds/red/brightness
-    chown system system /sys/class/leds/red/blink
     chown system system /sys/class/leds/green/brightness
-    chown system system /sys/class/leds/green/blink
     chown system system /sys/class/leds/blue/brightness
-    chown system system /sys/class/leds/blue/blink
     chown system system /sys/class/leds/red/device/grpfreq
     chown system system /sys/class/leds/red/device/grppwm
     chown system system /sys/class/leds/red/device/blink
@@ -591,12 +578,8 @@ on boot
     # Define default initial receive window size in segments.
     setprop net.tcp.default_init_rwnd 60
 
-    # Allow system group to trigger vibrator
-    chmod 0664 /sys/class/timed_output/vibrator/enable
     class_start core
-    class_start main
 
-# Never gets called, since Mer does its own 'mount_all'
 on nonencrypted
     # A/B update verifier that marks a successful boot.
     exec - root cache -- /system/bin/update_verifier nonencrypted
@@ -605,10 +588,6 @@ on nonencrypted
 
 on property:sys.init_log_level=*
     loglevel ${sys.init_log_level}
-
-# Mer needs to set this property when fs units are mounted
-on property:droid.late_start=trigger_late_start
-    class_start late_start
 
 on charger
     class_start charger
@@ -664,16 +643,12 @@ service ueventd /sbin/ueventd
     class core
     critical
     seclabel u:r:ueventd:s0
-#Not used by Mer
-    disabled
 
 service healthd /sbin/healthd
     class core
     critical
     seclabel u:r:healthd:s0
     group root system wakelock
-# Not used by Mer - spams logs and small battery drain
-    disabled
 
 service console /system/bin/sh
     class core
@@ -692,24 +667,3 @@ on property:ro.debuggable=1
 service flash_recovery /system/bin/install-recovery.sh
     class main
     oneshot
-    disabled
-
-# update recovery if enabled
-#on property:persist.sys.recovery_update=true
-#    start flash_recovery
-
-# This trigger is run by our modified init after boot has finished
-on ready
-    class_start mer
-
-# Notify Mer's systemd that we're done
-# This is started at the end of boot after both core and main classes
-service droid_init_done /bin/sh /usr/bin/droid/droid-init-done.sh
-    class mer
-    oneshot
-
-# Properly handle shutdown from Mer
-on property:hybris.shutdown=*
-    class_stop late_start
-    class_stop main
-    class_stop core

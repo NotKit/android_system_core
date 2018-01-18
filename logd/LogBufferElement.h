@@ -76,7 +76,7 @@ public:
     uint64_t getSequence(void) const { return mSequence; }
     static uint64_t getCurrentSequence(void) { return sequence.load(memory_order_relaxed); }
     log_time getRealTime(void) const { return mRealTime; }
-
+    char *getMsg(void) const {return mMsg;}
     uint32_t getTag(void) const;
 
     static const uint64_t FLUSH_ERROR;

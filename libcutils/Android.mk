@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2008 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -117,14 +122,6 @@ LOCAL_SRC_FILES_x86_64 += \
         arch-x86_64/android_memset16.S \
         arch-x86_64/android_memset32.S \
 
-ifneq ($(TARGET_RECOVERY_PRE_COMMAND),)
-    LOCAL_CFLAGS += -DRECOVERY_PRE_COMMAND='$(TARGET_RECOVERY_PRE_COMMAND)'
-endif
-
-ifeq ($(TARGET_RECOVERY_PRE_COMMAND_CLEAR_REASON),true)
-    LOCAL_CFLAGS += -DRECOVERY_PRE_COMMAND_CLEAR_REASON
-endif
-
 LOCAL_C_INCLUDES := $(libcutils_c_includes)
 LOCAL_STATIC_LIBRARIES := liblog
 ifneq ($(ENABLE_CPUSETS),)
@@ -134,10 +131,21 @@ ifneq ($(ENABLE_SCHEDBOOST),)
 LOCAL_CFLAGS += -DUSE_SCHEDBOOST
 endif
 LOCAL_CFLAGS += -Werror -Wall -Wextra -std=gnu90
+#M: arm 32bit
+ifeq ($(MTK_USER_SPACE_DEBUG_FW),yes)
+  ifeq ($(TARGET_BUILD_VARIANT),eng)
+    ifneq ($(filter arm arm64,$(TARGET_ARCH)),)
+      ifeq ($(TARGET_IS_64_BIT),true)
+        LOCAL_CFLAGS_arm += -marm -fno-omit-frame-pointer -Wno-strict-aliasing
+      else
+        LOCAL_CFLAGS +=  -marm -fno-omit-frame-pointer -Wno-strict-aliasing
+      endif
+    endif
+  endif
+endif
 LOCAL_CLANG := true
 LOCAL_SANITIZE := integer
 include $(BUILD_STATIC_LIBRARY)
-
 include $(CLEAR_VARS)
 LOCAL_MODULE := libcutils
 # TODO: remove liblog as whole static library, once we don't have prebuilt that requires
@@ -151,6 +159,18 @@ ifneq ($(ENABLE_SCHEDBOOST),)
 LOCAL_CFLAGS += -DUSE_SCHEDBOOST
 endif
 LOCAL_CFLAGS += -Werror -Wall -Wextra
+#M: arm 32bit
+ifeq ($(MTK_USER_SPACE_DEBUG_FW),yes)
+  ifeq ($(TARGET_BUILD_VARIANT),eng)
+    ifneq ($(filter arm arm64,$(TARGET_ARCH)),)
+      ifeq ($(TARGET_IS_64_BIT),true)
+        LOCAL_CFLAGS_arm += -marm -fno-omit-frame-pointer
+      else
+        LOCAL_CFLAGS +=  -marm -fno-omit-frame-pointer
+      endif
+    endif
+  endif
+endif
 LOCAL_C_INCLUDES := $(libcutils_c_includes)
 LOCAL_CLANG := true
 LOCAL_SANITIZE := integer

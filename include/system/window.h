@@ -288,6 +288,13 @@ enum {
      * Returns the duration of the last queueBuffer call in microseconds
      */
     NATIVE_WINDOW_LAST_QUEUE_DURATION = 15,
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    NATIVE_WINDOW_CONSUMER_PID = 100,
+    NATIVE_WINDOW_FREEMODE_QUERY = 200,
+    NATIVE_WINDOW_FREEMODE_ENABLE = 201,
+    NATIVE_WINDOW_FREEMODE_DISABLE = 202,
+#endif
 };
 
 /* Valid operations for the (*perform)() hook.

@@ -33,7 +33,6 @@ int create_socket(const char *name, int type, mode_t perm,
 
 bool read_file(const char* path, std::string* content);
 int write_file(const char* path, const char* content);
-int write_file_follow(const char* path, const char* content);
 
 time_t gettime();
 uint64_t gettime_ns();
@@ -60,7 +59,7 @@ void remove_link(const char *oldpath, const char *newpath);
 int wait_for_file(const char *filename, int timeout);
 void open_devnull_stdio(void);
 void import_kernel_cmdline(bool in_qemu,
-                           const std::function<void(const std::string&, const std::string&, bool)>&);
+                           std::function<void(const std::string&, const std::string&, bool)>);
 int make_dir(const char *path, mode_t mode);
 int restorecon(const char *pathname);
 int restorecon_recursive(const char *pathname);
@@ -68,4 +67,11 @@ int restorecon_recursive_skipce(const char *pathname);
 std::string bytes_to_hex(const uint8_t *bytes, size_t bytes_len);
 bool is_dir(const char* pathname);
 bool expand_props(const std::string& src, std::string* dst);
+#if defined(MTK_UBIFS_SUPPORT) || defined (MTK_FTL_SUPPORT)
+int ubi_attach_mtd(const char *name);
+int ubi_detach_dev(int dev);
+#ifdef MTK_FTL_SUPPORT
+int ftl_attach_ubi(int ubi_num);
+#endif
+#endif
 #endif

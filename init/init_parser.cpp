@@ -125,8 +125,7 @@ bool Parser::ParseConfigDir(const std::string& path) {
     std::vector<std::string> files;
     while ((current_file = readdir(config_dir.get()))) {
         // Ignore directories and only process regular files.
-        // Mer allow also symlinks
-        if (current_file->d_type == DT_REG || current_file->d_type == DT_LNK) {
+        if (current_file->d_type == DT_REG) {
             std::string current_path =
                 android::base::StringPrintf("%s/%s", path.c_str(), current_file->d_name);
             files.emplace_back(current_path);

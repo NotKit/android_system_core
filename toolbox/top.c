@@ -31,7 +31,6 @@
 
 #include <ctype.h>
 #include <dirent.h>
-#include <errno.h>
 #include <grp.h>
 #include <inttypes.h>
 #include <pwd.h>
@@ -39,7 +38,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <time.h>
 #include <unistd.h>
 
 #include <cutils/sched_policy.h>
@@ -182,11 +180,6 @@ int top_main(int argc, char *argv[]) {
     new_procs = old_procs = NULL;
 
     read_procs();
-
-    // Pause 250ms to get better data and avoid divide by zero later (http://b/32478213).
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 250000000 };
-    TEMP_FAILURE_RETRY(nanosleep(&ts, &ts));
-
     while ((iterations == -1) || (iterations-- > 0)) {
         old_procs = new_procs;
         num_old_procs = num_new_procs;
@@ -497,13 +490,13 @@ static void print_procs(void) {
         if (!threads) {
             printf("%5d %-8.8s %2s %3ld %3" PRIu64 "%% %c %5d %6" PRIu64 "K %6" PRIu64 "K %3s %s\n",
                    proc->pid, user_str, proc->pr, proc->ni,
-                   proc->delta_time * 100 / total_delta_time, proc->state, proc->num_threads,
+                   (total_delta_time != 0) ? (proc->delta_time * 100 / total_delta_time) : 0, proc->state, proc->num_threads,
                    proc->vss / 1024, proc->rss * getpagesize() / 1024, proc->policy,
                    proc->name[0] != 0 ? proc->name : proc->tname);
         } else {
             printf("%5d %5d %-8.8s %2s %3ld %3" PRIu64 "%% %c %6" PRIu64 "K %6" PRIu64 "K %3s %-15s %s\n",
                    proc->pid, proc->tid, user_str, proc->pr, proc->ni,
-                   proc->delta_time * 100 / total_delta_time, proc->state,
+                   (total_delta_time != 0) ? (proc->delta_time * 100 / total_delta_time) : 0, proc->state,
                    proc->vss / 1024, proc->rss * getpagesize() / 1024, proc->policy,
                    proc->tname, proc->name);
         }

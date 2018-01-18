@@ -22,6 +22,21 @@
 #include <log/log.h>
 #include <sysutils/SocketClient.h>
 
+
+extern void kernel_log_print(const char *fmt, ...)__attribute__((format(printf, 1, 2)));
+#if defined(HAVE_AEE_FEATURE) && defined(ANDROID_LOG_MUCH_COUNT)
+extern int log_detect_value;
+extern int log_much_delay_detect;
+extern int build_type;
+extern int detect_time;
+#define DETECT_DELAY_TIME (60*30)
+#endif
+
+#if defined(MTK_LOGD_FILTER)
+void logd_reader_del(void);
+void logd_reader_add(void);
+#endif
+
 // Hijack this header as a common include file used by most all sources
 // to report some utilities defined here and there.
 

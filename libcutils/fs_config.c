@@ -119,6 +119,7 @@ static const struct fs_path_config android_files[] = {
     { 00440, AID_ROOT,      AID_SHELL,     0, "system/etc/init.goldfish.rc" },
     { 00550, AID_ROOT,      AID_SHELL,     0, "system/etc/init.goldfish.sh" },
     { 00550, AID_ROOT,      AID_SHELL,     0, "system/etc/init.ril" },
+    { 00550, AID_DHCP,      AID_SHELL,     0, "system/etc/wide-dhcpv6/dhcp6c.script" },
     { 00555, AID_ROOT,      AID_ROOT,      0, "system/etc/ppp/*" },
     { 00555, AID_ROOT,      AID_ROOT,      0, "system/etc/rc.*" },
     { 00440, AID_ROOT,      AID_ROOT,      0, "system/etc/recovery.img" },
@@ -134,8 +135,9 @@ static const struct fs_path_config android_files[] = {
     { 00750, AID_ROOT,      AID_SHELL,     0, "data/nativetest/*" },
     { 00750, AID_ROOT,      AID_SHELL,     0, "data/nativetest64/*" },
 
-    /* CM's daemonized su doesn't need the setuid bit */
-    { 00755, AID_ROOT,      AID_SHELL,     0, "system/xbin/su" },
+    /* the following two files are INTENTIONALLY set-uid, but they
+     * are NOT included on user builds. */
+    { 04750, AID_ROOT,      AID_SHELL,     0, "system/xbin/su" },
     { 06755, AID_ROOT,      AID_ROOT,      0, "system/xbin/procmem" },
 
     /* the following files have enhanced capabilities and ARE included in user builds. */
@@ -148,7 +150,6 @@ static const struct fs_path_config android_files[] = {
     { 00750, AID_ROOT,      AID_ROOT,      0, "system/bin/uncrypt" },
     { 00750, AID_ROOT,      AID_ROOT,      0, "system/bin/install-recovery.sh" },
     { 00755, AID_ROOT,      AID_SHELL,     0, "system/bin/*" },
-    { 00755, AID_ROOT,      AID_SHELL,     0, "system/etc/init.d/*" },
     { 00755, AID_ROOT,      AID_ROOT,      0, "system/lib/valgrind/*" },
     { 00755, AID_ROOT,      AID_ROOT,      0, "system/lib64/valgrind/*" },
     { 00755, AID_ROOT,      AID_SHELL,     0, "system/xbin/*" },

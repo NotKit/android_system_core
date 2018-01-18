@@ -31,9 +31,9 @@
 extern struct fs_info info;     /* magic global from ext4_utils */
 extern void reset_ext4fs_info();
 
-static int format_ext4(char *fs_blkdev, char *fs_mnt_point, long long fs_length)
+static int format_ext4(char *fs_blkdev, char *fs_mnt_point)
 {
-    uint64_t dev_sz;
+    unsigned int nr_sec;
     int fd, rc = 0;
 
     if ((fd = open(fs_blkdev, O_WRONLY, 0644)) < 0) {
@@ -41,7 +41,7 @@ static int format_ext4(char *fs_blkdev, char *fs_mnt_point, long long fs_length)
         return -1;
     }
 
-    if ((ioctl(fd, BLKGETSIZE64, &dev_sz)) == -1) {
+    if ((ioctl(fd, BLKGETSIZE, &nr_sec)) == -1) {
         ERROR("Cannot get block device size.  %s\n", strerror(errno));
         close(fd);
         return -1;
@@ -49,13 +49,7 @@ static int format_ext4(char *fs_blkdev, char *fs_mnt_point, long long fs_length)
 
     /* Format the partition using the calculated length */
     reset_ext4fs_info();
-    info.len = (off64_t)dev_sz;
-
-    if (fs_length > 0) {
-        info.len = fs_length;
-    } else if (fs_length < 0) {
-        info.len += fs_length;
-    }
+    info.len = ((off64_t)nr_sec * 512);
 
     /* Use make_ext4fs_internal to avoid wiping an already-wiped partition. */
     rc = make_ext4fs_internal(fd, NULL, NULL, fs_mnt_point, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL);
@@ -67,27 +61,15 @@ static int format_ext4(char *fs_blkdev, char *fs_mnt_point, long long fs_length)
     return rc;
 }
 
-static int format_f2fs(char *fs_blkdev, long long fs_length)
+static int format_f2fs(char *fs_blkdev)
 {
-    char * args[5];
+    char * args[3];
     int pid;
     int rc = 0;
-    char buff[65];
 
-    args[0] = (char *)"/system/bin/mkfs.f2fs";
-
-    if (fs_length >= 0) {
-        snprintf(buff, sizeof(buff), "%lld", fs_length / 512);
-        args[1] = fs_blkdev;
-        args[2] = buff;
-        args[3] = (char *)0;
-    } else if (fs_length < 0) {
-        snprintf(buff, sizeof(buff), "%lld", -fs_length);
-        args[1] = "-r";
-        args[2] = buff;
-        args[3] = fs_blkdev;
-        args[4] = (char *)0;
-    }
+    args[0] = (char *)"/sbin/mkfs.f2fs";
+    args[1] = fs_blkdev;
+    args[2] = (char *)0;
 
     pid = fork();
     if (pid < 0) {
@@ -95,7 +77,7 @@ static int format_f2fs(char *fs_blkdev, long long fs_length)
     }
     if (!pid) {
         /* This doesn't return */
-        execv("/system/bin/mkfs.f2fs", args);
+        execv("/sbin/mkfs.f2fs", args);
         exit(1);
     }
     for(;;) {
@@ -126,9 +108,9 @@ int fs_mgr_do_format(struct fstab_rec *fstab)
     ERROR("%s: Format %s as '%s'.\n", __func__, fstab->blk_device, fstab->fs_type);
 
     if (!strncmp(fstab->fs_type, "f2fs", 4)) {
-        rc = format_f2fs(fstab->blk_device, fstab->length);
+        rc = format_f2fs(fstab->blk_device);
     } else if (!strncmp(fstab->fs_type, "ext4", 4)) {
-        rc = format_ext4(fstab->blk_device, fstab->mount_point, fstab->length);
+        rc = format_ext4(fstab->blk_device, fstab->mount_point);
     } else {
         ERROR("File system type '%s' is not supported\n", fstab->fs_type);
     }

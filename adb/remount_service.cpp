@@ -94,11 +94,15 @@ static bool remount_partition(int fd, const char* dir) {
     if (dev.empty()) {
         return true;
     }
+
+#if defined(MTK_EMMC_SUPPORT) || defined(MTK_FTL_SUPPORT)
     if (!make_block_device_writable(dev)) {
         WriteFdFmt(fd, "remount of %s failed; couldn't make block device %s writable: %s\n",
                    dir, dev.c_str(), strerror(errno));
         return false;
     }
+#endif
+
     if (mount(dev.c_str(), dir, "none", MS_REMOUNT, nullptr) == -1) {
         WriteFdFmt(fd, "remount of %s failed: %s\n", dir, strerror(errno));
         return false;

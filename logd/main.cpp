@@ -86,11 +86,13 @@
 //    logd
 //
 
+int kernelLogFd = -1;
+
 static int drop_privs() {
     struct sched_param param;
     memset(&param, 0, sizeof(param));
 
-    if (set_sched_policy(0, SP_BACKGROUND) < 0) {
+    if (set_sched_policy(0, SP_FOREGROUND) < 0) {
         return -1;
     }
 
@@ -98,7 +100,7 @@ static int drop_privs() {
         return -1;
     }
 
-    if (setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_BACKGROUND) < 0) {
+    if (setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_FOREGROUND) < 0) {
         return -1;
     }
 
@@ -202,8 +204,8 @@ bool property_get_bool(const char *key, int flag) {
         return false;
     }
     if (flag & BOOL_DEFAULT_FLAG_ENG) {
-        property_get("ro.build.type", property, "");
-        if (!strcmp(property, "user")) {
+        property_get("ro.debuggable", property, "");
+        if (strcmp(property, "1")) {
             return false;
         }
     }
@@ -237,16 +239,81 @@ static bool package_list_parser_cb(pkg_info *info, void * /* userdata */) {
     return rc;
 }
 
+void kernel_log_print(const char *fmt, ...) {
+    if (kernelLogFd < 0)
+        return;
+    if (fmt == NULL) {
+        return;
+    }
+
+    va_list args;
+
+    char *str = NULL;
+    va_start(args, fmt);
+    int rc = vasprintf(&str, fmt, args);
+    va_end(args);
+
+    if (rc < 0) {
+        free(str);
+        return;
+    }
+
+    if (kernelLogFd >= 0) {
+     write(kernelLogFd, str, strlen(str)+1);
+    }
+    free(str);
+}
+
+#if defined(MTK_LOGD_FILTER)
+static int log_reader_count = 0;
+void logd_reader_del(void) {
+    char property[PROPERTY_VALUE_MAX];
+
+    if (log_reader_count == 1) {
+        property_get("persist.log.tag", property, "I");
+        property_set("log.tag", property);
+        kernel_log_print("logd no log reader, set log level to %s!\n", property);
+    }
+    log_reader_count--;
+}
+
+void logd_reader_add(void) {
+    char property[PROPERTY_VALUE_MAX];
+
+    if (log_reader_count == 0) {
+        property_get("persist.log.tag", property, "M");
+        property_set("log.tag", property);
+        kernel_log_print("logd first log reader, set log level to %s!\n", property);
+    }
+    log_reader_count++;
+}
+
+#endif
+
+#if defined(HAVE_AEE_FEATURE) && defined(ANDROID_LOG_MUCH_COUNT)
+int log_detect_value;
+int log_much_delay_detect = 0;      // log much detect pause, may use double detect value
+int build_type;     // eng:0, userdebug:1 user:2
+int detect_time = 1;
+#endif
+
+
 static void *reinit_thread_start(void * /*obj*/) {
     prctl(PR_SET_NAME, "logd.daemon");
-    set_sched_policy(0, SP_BACKGROUND);
-    setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_BACKGROUND);
+    set_sched_policy(0, SP_FOREGROUND);
+    setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_FOREGROUND);
 
     // If we are AID_ROOT, we should drop to AID_SYSTEM, if we are anything
     // else, we have even lesser privileges and accept our fate. Not worth
     // checking for error returns setting this thread's privileges.
     (void)setgid(AID_SYSTEM);
     (void)setuid(AID_SYSTEM);
+    char property[PROPERTY_VALUE_MAX];
+#if defined(HAVE_AEE_FEATURE) && defined(ANDROID_LOG_MUCH_COUNT)
+    bool value;
+    int count;
+    int delay;
+#endif
 
     while (reinit_running && !sem_wait(&reinit) && reinit_running) {
 
@@ -273,6 +340,65 @@ static void *reinit_thread_start(void * /*obj*/) {
             logBuf->init();
             logBuf->initPrune(NULL);
         }
+
+#if defined(HAVE_AEE_FEATURE) && defined(ANDROID_LOG_MUCH_COUNT)
+        property_get("ro.aee.build.info", property, "");
+        value = !strcmp(property, "mtk");
+        if (value != true) {
+            log_detect_value = 0;
+            continue;
+        }
+
+        value = property_get_bool("persist.logmuch.detect", true);
+        if (value == true) {
+            property_get("ro.build.type", property, "");
+            if (!strcmp(property, "eng")) {
+                build_type = 0;
+            } else if (!strcmp(property, "userdebug")) {
+                build_type = 1;
+            } else {
+                build_type = 2;
+            }
+
+            if (log_detect_value == 0) {
+                log_detect_value = ANDROID_LOG_MUCH_COUNT;
+            }
+
+            property_get("logmuch.detect.value", property, "-1");
+            count = atoi(property);
+            if (count == 0) {
+                count = ANDROID_LOG_MUCH_COUNT;
+            }
+            kernel_log_print("logd: logmuch detect, build type %d, detect value %d:%d.\n",
+                build_type, count, log_detect_value);
+
+            if (count > 0 && count != log_detect_value) {  // set new log level
+                log_detect_value = count;
+                log_much_delay_detect = 1;
+            }
+            if (log_detect_value > 1000) {
+                detect_time = 1;
+            } else {
+                detect_time = 6;
+            }
+            property_get("logmuch.detect.delay", property, "");
+            delay = atoi(property);
+
+            if (delay > 0) {
+                log_much_delay_detect = 3*60;
+                property_set("logmuch.detect.delay", "0");
+            }
+        } else {
+            log_detect_value = 0;
+            kernel_log_print("logd: logmuch detect disable.");
+        }
+#endif
+#if defined(MTK_LOGD_FILTER)    /*for default status */
+        if (log_reader_count == 0) {
+            property_set("log.tag", "I");
+            kernel_log_print("logd no log reader, set log level to INFO!\n");
+        }
+#endif
     }
 
     return NULL;
@@ -380,6 +506,7 @@ int main(int argc, char *argv[]) {
         fdPmesg = open("/proc/kmsg", O_RDONLY | O_NDELAY);
     }
     fdDmesg = open("/dev/kmsg", O_WRONLY);
+    kernelLogFd = fdDmesg;
 
     // issue reinit command. KISS argument parsing.
     if ((argc > 1) && argv[1] && !strcmp(argv[1], "--reinit")) {
@@ -510,6 +637,10 @@ int main(int argc, char *argv[]) {
     if (klogd) {
         kl = new LogKlog(logBuf, reader, fdDmesg, fdPmesg, al != NULL);
     }
+#ifdef MTK_LOGD_DEBUG
+    // add for set dumpable
+    prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+#endif
 
     readDmesg(al, kl);
 

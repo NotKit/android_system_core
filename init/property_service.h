@@ -27,8 +27,6 @@ struct property_audit_data {
     const char* name;
 };
 
-extern bool property_child_reap(pid_t pid);
-
 extern void property_init(void);
 extern void property_load_boot_defaults(void);
 extern void load_persist_props(void);
@@ -36,7 +34,6 @@ extern void load_system_props(void);
 extern void start_property_service(void);
 std::string property_get(const char* name);
 extern int property_set(const char *name, const char *value);
-extern bool property_get_bool(const char *name, bool def_value);
 
 
 #endif  /* _INIT_PROPERTY_H */

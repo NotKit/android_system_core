@@ -27,7 +27,6 @@
 #include <sys/poll.h>
 
 #include <memory>
-#include <queue>
 
 #include <cutils/misc.h>
 #include <cutils/sockets.h>
@@ -55,8 +54,11 @@
 #include "init.h"
 #include "util.h"
 #include "log.h"
-#include "vendor_init.h"
 
+#ifdef MTK_INIT
+#include <sys/system_properties.h>
+#include <cutils/android_reboot.h>
+#endif
 #define PERSISTENT_PROPERTY_DIR  "/data/property"
 #define FSTAB_PREFIX "/fstab."
 #define RECOVERY_MOUNT_POINT "/recovery"
@@ -64,6 +66,12 @@
 static int persistent_properties_loaded = 0;
 
 static int property_set_fd = -1;
+
+/* efuse struct */
+typedef struct {
+    unsigned int entry_num;
+    unsigned int data[100];
+}DEVINFO_S;
 
 void property_init() {
     if (__system_property_area_init()) {
@@ -74,9 +82,6 @@ void property_init() {
 
 static int check_mac_perms(const char *name, char *sctx, struct ucred *cr)
 {
-    // Disable permission check in Mer
-    return 1;
-
     char *tctx = NULL;
     int result = 0;
     property_audit_data audit_data;
@@ -122,31 +127,6 @@ std::string property_get(const char* name) {
     char value[PROP_VALUE_MAX] = {0};
     __system_property_get(name, value);
     return value;
-}
-
-bool property_get_bool(const char *key, bool default_value) {
-    if (!key) {
-        return default_value;
-    }
-
-    bool result = default_value;
-
-    std::string string_value = property_get(key);
-    if ((string_value == "0")
-            || (string_value == "n")
-            || (string_value == "no")
-            || (string_value == "false")
-            || (string_value == "off")) {
-        result = false;
-    } else if ((string_value == "1")
-            || (string_value == "y")
-            || (string_value == "yes")
-            || (string_value == "true")
-            || (string_value == "on")) {
-        result = true;
-    }
-
-    return result;
 }
 
 static void write_persistent_property(const char *name, const char *value)
@@ -205,22 +185,42 @@ static int property_set_impl(const char* name, const char* value) {
     if (!is_legal_property_name(name, namelen)) return -1;
     if (valuelen >= PROP_VALUE_MAX) return -1;
 
+    if (strcmp("selinux.reload_policy", name) == 0 && strcmp("1", value) == 0) {
+        if (selinux_reload_policy() != 0) {
+            ERROR("Failed to reload policy\n");
+        }
+    } else if (strcmp("selinux.restorecon_recursive", name) == 0 && valuelen > 0) {
+        if (restorecon_recursive(value) != 0) {
+            ERROR("Failed to restorecon_recursive %s\n", value);
+        }
+    }
+
     prop_info* pi = (prop_info*) __system_property_find(name);
 
     if(pi != 0) {
         /* ro.* properties may NEVER be modified once set */
-        if(!strncmp(name, "ro.", 3)) return -1;
-
+        if(!strncmp(name, "ro.", 3)) {
+#ifdef MTK_INIT
+            ERROR("PropSet Error:[%s:%s]  ro.* properties may NEVER be modified once set\n", name, value);
+#endif
+            return -1;
+        }
         __system_property_update(pi, value, valuelen);
     } else {
         int rc = __system_property_add(name, namelen, value, valuelen);
         if (rc < 0) {
+#ifdef MTK_INIT
+            ERROR("Failed to set '%s'='%s'\n", name, value);
+#endif
             return rc;
         }
     }
     /* If name starts with "net." treat as a DNS property. */
     if (strncmp("net.", name, strlen("net.")) == 0)  {
         if (strcmp("net.change", name) == 0) {
+#ifdef MTK_INIT
+            INFO("PropSet [%s:%s] Done\n", name, value);
+#endif
             return 0;
         }
        /*
@@ -238,111 +238,33 @@ static int property_set_impl(const char* name, const char* value) {
         write_persistent_property(name, value);
     }
     property_changed(name, value);
+#ifdef MTK_INIT
+    INFO("PropSet [%s:%s] Done\n", name, value);
+#endif
     return 0;
 }
 
-typedef int (*property_async_func_t)(const char* name, const char* value);
+#ifdef MTK_INIT
+int reboot_pid(int pid) {
+    int fd = open("/proc/mtprof/reboot_pid", O_RDWR);
+    char buf[100];
+    int cnt;
 
-struct property_child_info {
-    pid_t                       pid;
-    property_async_func_t       func;
-    char*                       name;
-    char*                       value;
-};
+    cnt = sprintf(buf, "%d", pid);
 
-static std::queue<property_child_info> property_children;
-
-static void property_child_launch(void)
-{
-    auto& info = property_children.front();
-    pid_t pid = fork();
-    if (pid < 0) {
-        ERROR("Failed to fork property child process\n");
-        while (!property_children.empty()) {
-            info = property_children.front();
-            free(info.name);
-            free(info.value);
-            property_children.pop();
-        }
-        return;
-    }
-    if (pid != 0) {
-        info.pid = pid;
-    }
-    else {
-        if (info.func(info.name, info.value) != 0) {
-            ERROR("Failed to set async property %s\n", info.name);
-        }
-
-        exit(0);
-    }
-}
-
-bool property_child_reap(pid_t pid)
-{
-    if (property_children.empty()) {
-        return false;
-    }
-    auto& info = property_children.front();
-    if (info.pid != pid) {
-        return false;
-    }
-    int rc = property_set_impl(info.name, info.value);
-    if (rc != 0) {
-        ERROR("property_set(\"%s\", \"%s\") failed\n", info.name, info.value);
-    }
-    free(info.name);
-    free(info.value);
-    property_children.pop();
-    if (property_children.size() > 0) {
-        property_child_launch();
-    }
-    return true;
-}
-
-static bool property_set_async(const char* name,
-                               const char* value,
-                               property_async_func_t func)
-{
-    if (!*value) {
-        int rc = property_set_impl(name, value);
-        return (rc == 0);
-    }
-
-    property_child_info info;
-    memset(&info, 0, sizeof(info));
-    info.func = func;
-    info.name = strdup(name);
-    info.value = strdup(value);
-    property_children.push(info);
-    if (property_children.size() == 1) {
-        ERROR("property_set_async: launch child\n");
-        property_child_launch();
-    }
-    return true;
-}
-
-static int restorecon_recursive_async(const char* name, const char* value)
-{
-    return restorecon_recursive(value);
-}
-
-int property_set(const char* name, const char* value) {
-
-    // Handle magic properties
-    if (strcmp("selinux.reload_policy", name) == 0 && strcmp("1", value) == 0) {
-        if (selinux_reload_policy() != 0) {
-            ERROR("Failed to reload policy\n");
-        }
-    } else if (strcmp("selinux.restorecon_recursive", name) == 0 ||
-               strncmp("selinux.restorecon_recursive.", name,
-                       strlen("selinux.restorecon_recursive.")) == 0) {
-        if (!property_set_async(name, value, restorecon_recursive_async)) {
-            ERROR("property_set(\"%s\", \"%s\") failed\n", name, value);
-        }
+    fprintf(stderr, "reboot  pid is %d, %s.\n", pid, buf);
+    if(fd < 0) {
+        fprintf(stderr, "open /proc/mtprof/reboot_pid error");
         return 0;
     }
 
+    write(fd, buf, cnt);
+    close(fd);
+    return 1;
+}
+#endif
+
+int property_set(const char* name, const char* value) {
     int rc = property_set_impl(name, value);
     if (rc == -1) {
         ERROR("property_set(\"%s\", \"%s\") failed\n", name, value);
@@ -353,10 +275,8 @@ int property_set(const char* name, const char* value) {
 static void handle_property_set_fd()
 {
     prop_msg msg;
-    int n;
     int s;
     int r;
-    int ret;
     struct ucred cr;
     struct sockaddr_un addr;
     socklen_t addr_size = sizeof(addr);
@@ -365,8 +285,6 @@ static void handle_property_set_fd()
     struct pollfd ufds[1];
     const int timeout_ms = 2 * 1000;  /* Default 2 sec timeout for caller to send property. */
     int nr;
-    char rproperty[PROP_VALUE_MAX];
-    const prop_info *pi;
 
     if ((s = accept(property_set_fd, (struct sockaddr *) &addr, &addr_size)) < 0) {
         return;
@@ -419,6 +337,9 @@ static void handle_property_set_fd()
             // ctl.* properties.
             close(s);
             if (check_control_mac_perms(msg.value, source_ctx, &cr)) {
+#ifdef MTK_INIT
+                INFO("[PropSet]: pid:%u uid:%u gid:%u %s %s\n", cr.pid, cr.uid, cr.gid, msg.name, msg.value);
+#endif
                 handle_control_message((char*) msg.name + 4, (char*) msg.value);
             } else {
                 ERROR("sys_prop: Unable to %s service ctl [%s] uid:%d gid:%d pid:%d\n",
@@ -426,6 +347,13 @@ static void handle_property_set_fd()
             }
         } else {
             if (check_mac_perms(msg.name, source_ctx, &cr)) {
+#ifdef MTK_INIT
+                INFO("[PropSet]: pid:%u uid:%u gid:%u set %s=%s\n", cr.pid, cr.uid, cr.gid, msg.name, msg.value);
+                if(strcmp(msg.name, ANDROID_RB_PROPERTY) == 0) {
+                    INFO("pid %d set %s=%s\n", cr.pid, msg.name, msg.value);
+                    reboot_pid(cr.pid);
+                }
+#endif
                 property_set((char*) msg.name, (char*) msg.value);
             } else {
                 ERROR("sys_prop: permission denied uid:%d  name:%s\n",
@@ -439,34 +367,7 @@ static void handle_property_set_fd()
         }
         freecon(source_ctx);
         break;
-    case PROP_MSG_GETPROP:
-        msg.name[PROP_NAME_MAX-1] = 0;
-        msg.value[0] = 0;
 
-        if (!is_legal_property_name(msg.name, strlen(msg.name))) {
-            ERROR("sys_prop: illegal property name. Got: \"%s\"\n", msg.name);
-            close(s);
-            return;
-        }
-
-        /* If we have a value, copy it over, otherwise returns the default */
-        ret = __system_property_get(msg.name, rproperty);
-        if (ret) {
-            strlcpy(msg.value, rproperty, sizeof(msg.value));
-        }
-
-        /* Send the property value back */
-        r = TEMP_FAILURE_RETRY(send(s, &msg, sizeof(msg), 0));
-        close(s);
-        break;
-    case PROP_MSG_LISTPROP:
-        for(n = 0; (pi = __system_property_find_nth(n)); n++) {
-            msg.name[0] = msg.value[0] = 0;
-            __system_property_read(pi, msg.name, msg.value);
-            TEMP_FAILURE_RETRY(send(s, &msg, sizeof(msg), 0));
-        }
-        close(s);
-        break;
     default:
         close(s);
         break;
@@ -474,6 +375,43 @@ static void handle_property_set_fd()
 }
 
 static void load_properties_from_file(const char *, const char *);
+
+static void set_chip_cond_prop() {
+    int fd = 0;
+    int ret = 0;
+    unsigned int devinfo_data = 0;
+    DEVINFO_S devinfo;
+
+    fd = open("/sys/bus/platform/drivers/dev_info/dev_info", O_RDONLY);
+    if(fd < 0) {
+        ERROR("v1 device node is removed\n");
+        fd = open("/proc/device-tree/chosen/atag,devinfo", O_RDONLY);
+        if(fd < 0) {
+            ERROR("v2 device node is removed\n");
+            ERROR("efuse dev open fail \n");
+            return;
+        }
+    }
+
+    ret = read(fd, (void*)&devinfo, sizeof(DEVINFO_S));
+    if(ret > 0) {
+        devinfo_data = devinfo.data[25]; /* devinfo index = 25 */
+        NOTICE("devinfo info data is %x.\n", devinfo_data);
+        if(((devinfo_data >> 27) & 0x7) == 0x0) {
+            NOTICE("For 3G only chip.\n");
+            ret = property_set("persist.radio.lte.chip", "2");
+            if(ret < 0)
+                ERROR("[PropSet] set persist.radio.lte.chip.condition fail!! \n");
+        } else {
+            NOTICE("For LTE capable chip.\n");
+            ret = property_set("persist.radio.lte.chip", "1");
+            if(ret < 0)
+                ERROR("[PropSet] set persist.radio.lte.chip.condition fail!! \n");
+        }
+    } else
+        ERROR("Read efuse fail, ret: %d\n", ret);
+    close(fd);
+}
 
 /*
  * Filter is used to decide which properties to load: NULL loads all keys,
@@ -546,6 +484,10 @@ static void load_properties_from_file(const char* filename, const char* filter) 
         data.push_back('\n');
         load_properties(&data[0], filter);
     }
+#ifdef MTK_INIT
+    else
+        NOTICE("can not load properties %s from %s\n", filter, filename);
+#endif
     NOTICE("(Loading properties from %s took %.2fs.)\n", filename, t.duration());
 }
 
@@ -620,15 +562,51 @@ static void load_override_properties() {
     }
 }
 
+unsigned int mt_get_chip_hw_ver(void) {
+    int fd = 0;
+    int ret = 0;
+    char ver[32];
+
+    fd = open("/proc/chip/hw_ver", O_RDONLY);
+    if(fd < 0) {
+        ERROR("Can not open hw version dev\n");
+        return 0;
+    }
+
+    ret = read(fd, ver, 32);
+    close(fd);
+    if(ret > 0) {
+        NOTICE("hw version is %s\n", ver);
+        if(strncmp(ver, "CA01", 4) == 0)
+            return 1;
+        return 0;
+    }
+    ERROR("read hw version fail, ret: %d\n", ret);
+    return 0;
+}
+
 /* When booting an encrypted system, /data is not mounted when the
  * property service is started, so any properties stored there are
  * not loaded.  Vold triggers init to load these properties once it
  * has mounted /data.
  */
 void load_persist_props(void) {
+    int ret = 0;
+    std::string ro_hardware = property_get("ro.hardware");
+    NOTICE("ro.hardware: %s.\n", ro_hardware.c_str());
     load_override_properties();
     /* Read persistent properties after all default values have been loaded. */
     load_persistent_properties();
+    /* read efuse to check die condition */
+    if (ro_hardware == "mt6757") {
+        if(mt_get_chip_hw_ver() == 1) {
+            NOTICE("For LTE capable chip.\n");
+            ret = property_set("persist.radio.lte.chip", "1");
+            if(ret < 0)
+                ERROR("[PropSet] set persist.radio.lte.chip.condition fail!! \n");
+        }
+        else set_chip_cond_prop();
+    }
 }
 
 void load_recovery_id_prop() {
@@ -673,12 +651,6 @@ void load_system_props() {
     load_properties_from_file(PROP_PATH_SYSTEM_BUILD, NULL);
     load_properties_from_file(PROP_PATH_VENDOR_BUILD, NULL);
     load_properties_from_file(PROP_PATH_FACTORY, "ro.*");
-
-    /* update with vendor-specific property runtime
-     * overrides
-     */
-    vendor_load_properties();
-
     load_recovery_id_prop();
 }
 

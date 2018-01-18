@@ -42,6 +42,30 @@ event_flag := -DAUDITD_LOG_TAG=1003 -DLOGD_LOG_TAG=1004
 
 LOCAL_CFLAGS := -Werror $(event_flag)
 
+ifeq ($(HAVE_AEE_FEATURE), yes)
+    LOCAL_SHARED_LIBRARIES += libaed
+    LOCAL_CFLAGS += -DHAVE_AEE_FEATURE
+    LOCAL_C_INCLUDES += $(MTK_ROOT)/external/aee/binary/inc
+endif
+
+ifeq ($(MTK_INTERNAL),yes)
+ifneq ($(ANDROID_LOG_MUCH_COUNT), )
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+    LOCAL_CFLAGS += -DANDROID_LOG_MUCH_COUNT=$(ANDROID_LOG_MUCH_COUNT)
+else
+    LOCAL_CFLAGS += -DANDROID_LOG_MUCH_COUNT=1000
+endif
+    LOCAL_INIT_RC := logd_e.rc
+endif
+endif
+
+LOCAL_CFLAGS += -DMTK_LOGD_FILTER
+
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+LOCAL_CFLAGS += -DMTK_LOGD_DEBUG
+endif
+
+
 include $(BUILD_EXECUTABLE)
 
 include $(call first-makefiles-under,$(LOCAL_PATH))

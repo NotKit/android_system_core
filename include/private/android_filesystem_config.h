@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -103,11 +108,6 @@
 /* The range 2900-2999 is reserved for OEM, and must never be
  * used here */
 #define AID_OEM_RESERVED_START 2900
-
-#define AID_QCOM_DIAG          2950  /* access to QTI diagnostic resources */
-#define AID_RFS                2951  /* Remote Filesystem for peripheral processors */
-#define AID_RFS_SHARED         2952  /* Shared files for Remote Filesystem for peripheral processors  */
-
 #define AID_OEM_RESERVED_END   2999
 
 /* The 3000 series are intended for use as supplemental group id's only.
@@ -123,14 +123,9 @@
 #define AID_READPROC      3009  /* Allow /proc read access */
 #define AID_WAKELOCK      3010  /* Allow system wakelock read/write access */
 
-#define AID_RFS_OLD          3012  /* DEPRECATED OLD ID FOR RFS, DO NOT USE */
-#define AID_RFS_SHARED_OLD   3013  /* DEPRECATED OLD ID FOR RFS-SHARED  */
-
 /* The range 5000-5999 is also reserved for OEM, and must never be used here. */
 #define AID_OEM_RESERVED_2_START 5000
 #define AID_OEM_RESERVED_2_END   5999
-#define AID_SENSORS       3011 /* access to /dev/socket/sensor_ctl_socket & QCCI/QCSI */
-
 
 #define AID_EVERYBODY     9997  /* shared between all apps in the same profile */
 #define AID_MISC          9998  /* access to misc storage */
@@ -202,7 +197,7 @@ static const struct android_id_info android_ids[] = {
     { "sdcard_all",    AID_SDCARD_ALL, },
     { "logd",          AID_LOGD, },
     { "shared_relro",  AID_SHARED_RELRO, },
-    { "adbus",         AID_DBUS, },
+    { "dbus",          AID_DBUS, },
     { "tlsdate",       AID_TLSDATE, },
     { "mediaex",       AID_MEDIA_EX, },
     { "audioserver",   AID_AUDIOSERVER, },
@@ -222,11 +217,6 @@ static const struct android_id_info android_ids[] = {
     { "cache",         AID_CACHE, },
     { "diag",          AID_DIAG, },
 
-    { "qcom_diag",     AID_QCOM_DIAG, },
-
-    { "rfs",           AID_RFS, },
-    { "rfs_shared",    AID_RFS_SHARED, },
-
     { "net_bt_admin",  AID_NET_BT_ADMIN, },
     { "net_bt",        AID_NET_BT, },
     { "inet",          AID_INET, },
@@ -237,10 +227,6 @@ static const struct android_id_info android_ids[] = {
     { "net_bt_stack",  AID_NET_BT_STACK, },
     { "readproc",      AID_READPROC, },
     { "wakelock",      AID_WAKELOCK, },
-    { "sensors",       AID_SENSORS, },
-
-    { "rfs_old",           AID_RFS_OLD, },
-    { "rfs_shared_old",    AID_RFS_SHARED_OLD, },
 
     { "everybody",     AID_EVERYBODY, },
     { "misc",          AID_MISC, },
@@ -258,9 +244,12 @@ struct fs_path_config {
     const char *prefix;
 };
 
+
 /* Rules for directories and files has moved to system/code/libcutils/fs_config.c */
 
+
 __BEGIN_DECLS
+
 
 /*
  * Used in:
@@ -274,6 +263,7 @@ __BEGIN_DECLS
  */
 void fs_config(const char *path, int dir, const char *target_out_path,
                unsigned *uid, unsigned *gid, unsigned *mode, uint64_t *capabilities);
+
 
 ssize_t fs_config_generate(char *buffer, size_t length, const struct fs_path_config *pc);
 

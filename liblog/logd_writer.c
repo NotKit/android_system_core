@@ -42,6 +42,7 @@
 #include "log_portability.h"
 #include "logger.h"
 
+#define SOCKET_TIME_OUT 2
 /* branchless on many architectures. */
 #define min(x,y) ((y) ^ (((x) ^ (y)) & -((x) < (y))))
 
@@ -61,20 +62,57 @@ LIBLOG_HIDDEN struct android_log_transport_write logdLoggerWrite = {
     .write = logdWrite,
 };
 
+#define THREAD_NAME_1 "aee_core_forwar"
+#define THREAD_NAME_2 "aee_dumpstate"
+#define THREAD_NAME_3 "debuggerd"
+#define THREAD_NAME_4 "adbd"
+
 /* log_init_lock assumed */
 static int logdOpen()
 {
     int i, ret = 0;
+    int skip_thread = 0;
 
     if (logdLoggerWrite.context.sock < 0) {
+        FILE *fp;
+        char path[PATH_MAX];
+        char threadnamebuf[1024];
+        char *threadname = NULL;
+
+        snprintf(path, PATH_MAX, "/proc/%d/comm", getpid());
+        if((fp = fopen(path, "r"))) {
+              threadname = fgets(threadnamebuf, sizeof(threadnamebuf), fp);
+              fclose(fp);
+          }
+        if (threadname) {
+            size_t len = strlen(threadname);
+            if (len && threadname[len - 1] == '\n') {
+                threadname[len - 1] = '\0';
+            }
+            if (strstr(threadname, THREAD_NAME_1) != NULL || strstr(threadname, THREAD_NAME_2) != NULL
+                 || strstr(threadname, THREAD_NAME_3) != NULL || strstr(threadname, THREAD_NAME_4) != NULL)
+                 skip_thread = 1;
+        }
         i = TEMP_FAILURE_RETRY(socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0));
         if (i < 0) {
             ret = -errno;
-        } else if (TEMP_FAILURE_RETRY(fcntl(i, F_SETFL, O_NONBLOCK)) < 0) {
+        /*} else if (TEMP_FAILURE_RETRY(fcntl(i, F_SETFL, O_NONBLOCK)) < 0) {
             ret = -errno;
-            close(i);
+            close(i);*/
         } else {
             struct sockaddr_un un;
+            if (skip_thread == 1) {
+                struct timeval tm;
+
+                tm.tv_sec = SOCKET_TIME_OUT;
+                tm.tv_usec = 0;
+                if (setsockopt(i, SOL_SOCKET, SO_RCVTIMEO, &tm, sizeof(tm)) == -1 ||
+                    setsockopt(i, SOL_SOCKET, SO_SNDTIMEO, &tm, sizeof(tm)) == -1) {
+                    ret = -errno;
+                    close(i);
+                    return ret;
+                }
+            }
             memset(&un, 0, sizeof(struct sockaddr_un));
             un.sun_family = AF_UNIX;
             strcpy(un.sun_path, "/dev/socket/logdw");

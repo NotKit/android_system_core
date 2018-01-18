@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +27,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <poll.h>
+#include <errno.h>
 
 #include <cutils/debugger.h>
 #include <cutils/sockets.h>
@@ -31,6 +38,21 @@
 
 static int send_request(int sock_fd, void* msg_ptr, size_t msg_len) {
   int result = 0;
+
+  int status = 0;
+  struct pollfd pollfds[1];
+  pollfds[0].fd = sock_fd;
+  pollfds[0].events = POLLRDHUP;
+  pollfds[0].revents = 0;
+  do {
+    status = TEMP_FAILURE_RETRY(poll(pollfds, 1, 0));
+    if ((status < 0 && errno != EINTR) || (pollfds[0].revents & POLLRDHUP)) {
+      result = -1;
+      // stream socket peer closed connection, or shut down writing half of connection, or error
+      return result;
+    }
+  } while(status < 0 && errno == EINTR);
+
   if (TEMP_FAILURE_RETRY(write(sock_fd, msg_ptr, msg_len)) != (ssize_t) msg_len) {
     result = -1;
   } else {
@@ -76,9 +98,8 @@ static int make_dump_request(debugger_action_t action, pid_t tid, int timeout_se
 }
 
 int dump_backtrace_to_file(pid_t tid, int fd) {
-  // Kind of a hack;
-  // Use a timeout of 5 seconds for a given native proc
-  return dump_backtrace_to_file_timeout(tid, fd, 5);
+  // return dump_backtrace_to_file_timeout(tid, fd, 0);
+  return dump_backtrace_to_file_timeout(tid, fd, 3);
 }
 
 int dump_backtrace_to_file_timeout(pid_t tid, int fd, int timeout_secs) {
@@ -91,23 +112,13 @@ int dump_backtrace_to_file_timeout(pid_t tid, int fd, int timeout_secs) {
   int result = 0;
   char buffer[1024];
   ssize_t n;
-  int flag = 0;
-
   while ((n = TEMP_FAILURE_RETRY(read(sock_fd, buffer, sizeof(buffer)))) > 0) {
-    flag = 1;
     if (TEMP_FAILURE_RETRY(write(fd, buffer, n)) != n) {
       result = -1;
       break;
     }
   }
   close(sock_fd);
-
-  if (flag == 0) {
-    ALOGE("Not even a single byte was read from debuggerd, for pid: %d", tid);
-  }
-  if (result == -1) {
-    ALOGE("Failure(probably timeout) while reading data from debuggerd, for pid: %d", tid);
-  }
   return result;
 }
 

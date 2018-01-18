@@ -56,6 +56,10 @@ extern "C" {
 #endif
 #endif
 
+#ifdef MTK_LOG_ENABLE
+#define MTK_LOG_ENABLE 0
+#endif
+
 /*
  * This is the local tag used for the following simplified
  * logging macros.  You can change this preprocessor definition
@@ -678,6 +682,9 @@ int android_log_destroy(android_log_context *ctx);
 int __android_log_is_loggable(int prio, const char *tag, int default_prio);
 
 int __android_log_security(); /* Device Owner is present */
+
+int __android_log_error_write(int tag, const char *subTag, int32_t uid, const char *data,
+                              uint32_t dataLen);
 
 int __android_log_error_write(int tag, const char *subTag, int32_t uid, const char *data,
                               uint32_t dataLen);

@@ -218,8 +218,8 @@ int LogAudit::logPrint(const char *fmt, ...) {
     }
     size_t e = strnlen(ecomm, LOGGER_ENTRY_MAX_PAYLOAD - b);
     n = b + e + l + 2;
-
-    {   // begin scope for main buffer
+    if (__android_log_is_loggable(info ? ANDROID_LOG_INFO : ANDROID_LOG_WARN, comm, ANDROID_LOG_VERBOSE)) {
+        // begin scope for main buffer
         char newstr[n];
 
         *newstr = info ? ANDROID_LOG_INFO : ANDROID_LOG_WARN;

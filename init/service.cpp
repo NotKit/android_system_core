@@ -325,6 +325,9 @@ bool Service::Start() {
     // process of exiting, we've ensured that they will immediately restart
     // on exit, unless they are ONESHOT.
     if (flags_ & SVC_RUNNING) {
+#ifdef MTK_INIT
+        ERROR("service '%s' still running, return directly\n", name_.c_str());
+#endif
         return false;
     }
 
@@ -344,8 +347,6 @@ bool Service::Start() {
     }
 
     std::string scon;
-// Disable SELinux
-/*
     if (!seclabel_.empty()) {
         scon = seclabel_;
     } else {
@@ -386,7 +387,7 @@ bool Service::Start() {
             return false;
         }
     }
-*/
+
     NOTICE("Starting service '%s'...\n", name_.c_str());
 
     pid_t pid = fork();
@@ -402,7 +403,7 @@ bool Service::Start() {
                                 (si.type == "dgram" ? SOCK_DGRAM :
                                  SOCK_SEQPACKET)));
             const char* socketcon =
-                !si.socketcon.empty() ? si.socketcon.c_str() : NULL;
+                !si.socketcon.empty() ? si.socketcon.c_str() : scon.c_str();
 
             int s = create_socket(si.name.c_str(), socket_type, si.perm,
                                   si.uid, si.gid, socketcon);
@@ -438,31 +439,29 @@ bool Service::Start() {
         // As requested, set our gid, supplemental gids, and uid.
         if (gid_) {
             if (setgid(gid_) != 0) {
-                ERROR("setgid failed: %s\n", strerror(errno));
+                ERROR("setgid failed: %s service name %s\n", strerror(errno), name_.c_str());
                 _exit(127);
             }
         }
         if (!supp_gids_.empty()) {
             if (setgroups(supp_gids_.size(), &supp_gids_[0]) != 0) {
-                ERROR("setgroups failed: %s\n", strerror(errno));
+                ERROR("setgroups failed: %s service name %s\n", strerror(errno), name_.c_str());
                 _exit(127);
             }
         }
         if (uid_) {
             if (setuid(uid_) != 0) {
-                ERROR("setuid failed: %s\n", strerror(errno));
+                ERROR("setuid failed: %s service name %s\n", strerror(errno), name_.c_str());
                 _exit(127);
             }
         }
-/*
         if (!seclabel_.empty()) {
             if (setexeccon(seclabel_.c_str()) < 0) {
-                ERROR("cannot setexeccon('%s'): %s\n",
-                      seclabel_.c_str(), strerror(errno));
+                ERROR("cannot setexeccon('%s'): %s service name %s\n",
+                      seclabel_.c_str(), strerror(errno), name_.c_str());
                 _exit(127);
             }
         }
-*/
 
         std::vector<std::string> expanded_args;
         std::vector<char*> strs;
@@ -733,7 +732,7 @@ Service* ServiceManager::FindServiceByKeychord(int keychord_id) const {
     return nullptr;
 }
 
-void ServiceManager::ForEachService(const std::function<void(Service*)>& callback) const {
+void ServiceManager::ForEachService(std::function<void(Service*)> callback) const {
     for (const auto& s : services_) {
         callback(s.get());
     }
@@ -784,8 +783,6 @@ bool ServiceManager::ReapOneProcess() {
     } else if (pid == -1) {
         ERROR("waitpid failed: %s\n", strerror(errno));
         return false;
-    } else if (property_child_reap(pid)) {
-        return true;
     }
 
     Service* svc = FindServiceByPid(pid);

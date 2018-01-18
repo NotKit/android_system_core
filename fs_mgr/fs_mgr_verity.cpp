@@ -14,31 +14,29 @@
  * limitations under the License.
  */
 
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
-#include <libgen.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <ctype.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <libgen.h>
 #include <time.h>
-#include <unistd.h>
 
 #include <android-base/file.h>
 #include <android-base/strings.h>
-#include <android-base/unique_fd.h>
-#include <crypto_utils/android_pubkey.h>
 #include <cutils/properties.h>
 #include <logwrap/logwrap.h>
-#include <openssl/obj_mac.h>
-#include <openssl/rsa.h>
-#include <openssl/sha.h>
-#include <private/android_filesystem_config.h>
+
+#include "mincrypt/rsa.h"
+#include "mincrypt/sha.h"
+#include "mincrypt/sha256.h"
 
 #include "fec/io.h"
 
@@ -74,8 +72,6 @@
 #define VERITY_KMSG_RESTART "dm-verity device corrupted"
 #define VERITY_KMSG_BUFSIZE 1024
 
-#define READ_BUF_SIZE 4096
-
 #define __STRINGIFY(x) #x
 #define STRINGIFY(x) __STRINGIFY(x)
 
@@ -87,45 +83,48 @@ struct verity_state {
 
 extern struct fs_info info;
 
-static RSA *load_key(const char *path)
+static RSAPublicKey *load_key(const char *path)
 {
-    uint8_t key_data[ANDROID_PUBKEY_ENCODED_SIZE];
+    RSAPublicKey* key = static_cast<RSAPublicKey*>(malloc(sizeof(RSAPublicKey)));
+    if (!key) {
+        ERROR("Can't malloc key\n");
+        return NULL;
+    }
 
     FILE* f = fopen(path, "r");
     if (!f) {
         ERROR("Can't open '%s'\n", path);
-        free(key_data);
+        free(key);
         return NULL;
     }
 
-    if (!fread(key_data, sizeof(key_data), 1, f)) {
+    if (!fread(key, sizeof(*key), 1, f)) {
         ERROR("Could not read key!\n");
         fclose(f);
-        free(key_data);
+        free(key);
+        return NULL;
+    }
+
+    if (key->len != RSANUMWORDS) {
+        ERROR("Invalid key length %d\n", key->len);
+        fclose(f);
+        free(key);
         return NULL;
     }
 
     fclose(f);
-
-    RSA* key = NULL;
-    if (!android_pubkey_decode(key_data, sizeof(key_data), &key)) {
-        ERROR("Could not parse key!\n");
-        free(key_data);
-        return NULL;
-    }
-
     return key;
 }
 
-static int verify_table(const uint8_t *signature, size_t signature_size,
-        const char *table, uint32_t table_length)
+static int verify_table(const uint8_t *signature, const char *table,
+        uint32_t table_length)
 {
-    RSA *key;
-    uint8_t hash_buf[SHA256_DIGEST_LENGTH];
+    RSAPublicKey *key;
+    uint8_t hash_buf[SHA256_DIGEST_SIZE];
     int retval = -1;
 
     // Hash the table
-    SHA256((uint8_t*)table, table_length, hash_buf);
+    SHA256_hash((uint8_t*)table, table_length, hash_buf);
 
     // Now get the public key from the keyfile
     key = load_key(VERITY_TABLE_RSA_KEY);
@@ -135,8 +134,11 @@ static int verify_table(const uint8_t *signature, size_t signature_size,
     }
 
     // verify the result
-    if (!RSA_verify(NID_sha256, hash_buf, sizeof(hash_buf), signature,
-                    signature_size, key)) {
+    if (!RSA_verify(key,
+                    signature,
+                    RSANUMBYTES,
+                    (uint8_t*) hash_buf,
+                    SHA256_DIGEST_SIZE)) {
         ERROR("Couldn't verify table\n");
         goto out;
     }
@@ -144,16 +146,16 @@ static int verify_table(const uint8_t *signature, size_t signature_size,
     retval = 0;
 
 out:
-    RSA_free(key);
+    free(key);
     return retval;
 }
 
 static int verify_verity_signature(const struct fec_verity_metadata& verity)
 {
-    if (verify_table(verity.signature, sizeof(verity.signature),
-            verity.table, verity.table_length) == 0 ||
-        verify_table(verity.ecc_signature, sizeof(verity.signature),
-            verity.table, verity.table_length) == 0) {
+    if (verify_table(verity.signature, verity.table,
+            verity.table_length) == 0 ||
+        verify_table(verity.ecc_signature, verity.table,
+            verity.table_length) == 0) {
         return 0;
     }
 
@@ -206,16 +208,6 @@ static int create_verity_device(struct dm_ioctl *io, char *name, int fd)
     verity_ioctl_init(io, name, 1);
     if (ioctl(fd, DM_DEV_CREATE, io)) {
         ERROR("Error creating device mapping (%s)", strerror(errno));
-        return -1;
-    }
-    return 0;
-}
-
-static int destroy_verity_device(struct dm_ioctl *io, char *name, int fd)
-{
-    verity_ioctl_init(io, name, 0);
-    if (ioctl(fd, DM_DEV_REMOVE, io)) {
-        ERROR("Error removing device mapping (%s)", strerror(errno));
         return -1;
     }
     return 0;
@@ -424,13 +416,10 @@ out:
 
 static int was_verity_restart()
 {
-    static const char* files[] = {
-        // clang-format off
-        "/sys/fs/pstore/console-ramoops-0",
+    static const char *files[] = {
         "/sys/fs/pstore/console-ramoops",
         "/proc/last_kmsg",
         NULL
-        // clang-format on
     };
     int i;
 
@@ -625,30 +614,6 @@ out:
     return rc;
 }
 
-static int read_partition(const char *path, uint64_t size)
-{
-    char buf[READ_BUF_SIZE];
-    ssize_t size_read;
-    android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(path, O_RDONLY | O_CLOEXEC)));
-
-    if (fd == -1) {
-        ERROR("Failed to open %s: %s\n", path, strerror(errno));
-        return -errno;
-    }
-
-    while (size) {
-        size_read = TEMP_FAILURE_RETRY(read(fd, buf, READ_BUF_SIZE));
-        if (size_read == -1) {
-            ERROR("Error in reading partition %s: %s\n", path,
-                  strerror(errno));
-            return -errno;
-        }
-        size -= size_read;
-    }
-
-    return 0;
-}
-
 static int compare_last_signature(struct fstab_rec *fstab, int *match)
 {
     char tag[METADATA_TAG_MAX_LENGTH + 1];
@@ -657,8 +622,8 @@ static int compare_last_signature(struct fstab_rec *fstab, int *match)
     off64_t offset = 0;
     struct fec_handle *f = NULL;
     struct fec_verity_metadata verity;
-    uint8_t curr[SHA256_DIGEST_LENGTH];
-    uint8_t prev[SHA256_DIGEST_LENGTH];
+    uint8_t curr[SHA256_DIGEST_SIZE];
+    uint8_t prev[SHA256_DIGEST_SIZE];
 
     *match = 1;
 
@@ -676,7 +641,7 @@ static int compare_last_signature(struct fstab_rec *fstab, int *match)
         goto out;
     }
 
-    SHA256(verity.signature, sizeof(verity.signature), curr);
+    SHA256_hash(verity.signature, RSANUMBYTES, curr);
 
     if (snprintf(tag, sizeof(tag), VERITY_LASTSIG_TAG "_%s",
             basename(fstab->mount_point)) >= (int)sizeof(tag)) {
@@ -684,7 +649,7 @@ static int compare_last_signature(struct fstab_rec *fstab, int *match)
         goto out;
     }
 
-    if (metadata_find(fstab->verity_loc, tag, SHA256_DIGEST_LENGTH,
+    if (metadata_find(fstab->verity_loc, tag, SHA256_DIGEST_SIZE,
             &offset) < 0) {
         goto out;
     }
@@ -703,7 +668,7 @@ static int compare_last_signature(struct fstab_rec *fstab, int *match)
         goto out;
     }
 
-    *match = !memcmp(curr, prev, SHA256_DIGEST_LENGTH);
+    *match = !memcmp(curr, prev, SHA256_DIGEST_SIZE);
 
     if (!*match) {
         /* update current signature hash */
@@ -831,7 +796,7 @@ int fs_mgr_update_verity_state(fs_mgr_verity_state_callback callback)
     char fstab_filename[PROPERTY_VALUE_MAX + sizeof(FSTAB_PREFIX)];
     const char *mount_point;
     char propbuf[PROPERTY_VALUE_MAX];
-    const char *status;
+    char *status;
     int fd = -1;
     int i;
     int mode;
@@ -881,13 +846,9 @@ int fs_mgr_update_verity_state(fs_mgr_verity_state_callback callback)
         verity_ioctl_init(io, mount_point, 0);
 
         if (ioctl(fd, DM_TABLE_STATUS, io)) {
-            if (fstab->recs[i].fs_mgr_flags & MF_VERIFYATBOOT) {
-                status = "V";
-            } else {
-                ERROR("Failed to query DM_TABLE_STATUS for %s (%s)\n", mount_point,
-                      strerror(errno));
-                continue;
-            }
+            ERROR("Failed to query DM_TABLE_STATUS for %s (%s)\n", mount_point,
+                strerror(errno));
+            continue;
         }
 
         status = &buffer[io->data_start + sizeof(struct dm_target_spec)];
@@ -951,7 +912,6 @@ int fs_mgr_setup_verity(struct fstab_rec *fstab)
     alignas(dm_ioctl) char buffer[DM_BUF_SIZE];
     struct dm_ioctl *io = (struct dm_ioctl *) buffer;
     char *mount_point = basename(fstab->mount_point);
-    bool verified_at_boot = false;
 
     if (fec_open(&f, fstab->blk_device, O_RDONLY, FEC_VERITY_DISABLE,
             FEC_DEFAULT_ROOTS) < 0) {
@@ -1085,26 +1045,10 @@ loaded:
     // mark the underlying block device as read-only
     fs_mgr_set_blk_ro(fstab->blk_device);
 
-    // Verify the entire partition in one go
-    // If there is an error, allow it to mount as a normal verity partition.
-    if (fstab->fs_mgr_flags & MF_VERIFYATBOOT) {
-        INFO("Verifying partition %s at boot\n", fstab->blk_device);
-        int err = read_partition(verity_blk_name, verity.data_size);
-        if (!err) {
-            INFO("Verified verity partition %s at boot\n", fstab->blk_device);
-            verified_at_boot = true;
-        }
-    }
-
     // assign the new verity block device as the block device
-    if (!verified_at_boot) {
-        free(fstab->blk_device);
-        fstab->blk_device = verity_blk_name;
-        verity_blk_name = 0;
-    } else if (destroy_verity_device(io, mount_point, fd) < 0) {
-        ERROR("Failed to remove verity device %s\n", mount_point);
-        goto out;
-    }
+    free(fstab->blk_device);
+    fstab->blk_device = verity_blk_name;
+    verity_blk_name = 0;
 
     // make sure we've set everything up properly
     if (test_access(fstab->blk_device) < 0) {

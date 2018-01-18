@@ -31,6 +31,7 @@
 #include "LogReader.h"
 #include "LogUtils.h"
 
+
 const uint64_t LogBufferElement::FLUSH_ERROR(0);
 atomic_int_fast64_t LogBufferElement::sequence(1);
 

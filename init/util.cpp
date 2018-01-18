@@ -176,8 +176,7 @@ out_close:
 bool read_file(const char* path, std::string* content) {
     content->clear();
 
-    // Allow symlinks in Mer
-    int fd = TEMP_FAILURE_RETRY(open(path, O_RDONLY|O_CLOEXEC));
+    int fd = TEMP_FAILURE_RETRY(open(path, O_RDONLY|O_NOFOLLOW|O_CLOEXEC));
     if (fd == -1) {
         return false;
     }
@@ -213,22 +212,7 @@ int write_file(const char* path, const char* content) {
     return result;
 }
 
-int write_file_follow(const char* path, const char* content) {
-    int fd = TEMP_FAILURE_RETRY(open(path, O_WRONLY|O_CREAT|O_CLOEXEC, 0600));
-    if (fd == -1) {
-        NOTICE("write_file: Unable to open '%s': %s\n", path, strerror(errno));
-        return -1;
-    }
-    int result = android::base::WriteStringToFd(content, fd) ? 0 : -1;
-    if (result == -1) {
-        NOTICE("write_file: Unable to write to '%s': %s\n", path, strerror(errno));
-    }
-    close(fd);
-    return result;
-}
-
-
-#define MAX_MTD_PARTITIONS 16
+#define MAX_MTD_PARTITIONS 40
 
 static struct {
     char name[16];
@@ -264,7 +248,7 @@ static void find_mtd_partitions(void)
             if (x) {
                 *x = 0;
             }
-            INFO("mtd partition %d, %s\n", mtdnum, mtdname + 1);
+            ERROR("mtd partition %d, %s,mtd_part_count = %d\n", mtdnum, mtdname + 1,mtd_part_count);
             if (mtd_part_count < MAX_MTD_PARTITIONS) {
                 strcpy(mtd_part_map[mtd_part_count].name, mtdname + 1);
                 mtd_part_map[mtd_part_count].number = mtdnum;
@@ -442,7 +426,7 @@ void open_devnull_stdio(void)
 }
 
 void import_kernel_cmdline(bool in_qemu,
-                           const std::function<void(const std::string&, const std::string&, bool)>& fn) {
+                           std::function<void(const std::string&, const std::string&, bool)> fn) {
     std::string cmdline;
     android::base::ReadFileToString("/proc/cmdline", &cmdline);
 
@@ -482,13 +466,9 @@ int restorecon(const char* pathname)
     return selinux_android_restorecon(pathname, 0);
 }
 
-#define RESTORECON_RECURSIVE_FLAGS \
-        (SELINUX_ANDROID_RESTORECON_FORCE | \
-        SELINUX_ANDROID_RESTORECON_RECURSE)
-
 int restorecon_recursive(const char* pathname)
 {
-    return selinux_android_restorecon(pathname, RESTORECON_RECURSIVE_FLAGS);
+    return selinux_android_restorecon(pathname, SELINUX_ANDROID_RESTORECON_RECURSE);
 }
 
 int restorecon_recursive_skipce(const char* pathname)
@@ -597,3 +577,186 @@ bool expand_props(const std::string& src, std::string* dst) {
 
     return true;
 }
+
+#if defined(MTK_UBIFS_SUPPORT) || defined (MTK_FTL_SUPPORT)
+#define UBI_CTRL_DEV "/dev/ubi_ctrl"
+#define UBI_SYS_PATH "/sys/class/ubi"
+static int ubi_dev_read_int(int dev, const char *file, int def)
+{
+   int fd, val = def;
+   char path[128], buf[64];
+
+   sprintf(path, UBI_SYS_PATH "/ubi%d/%s", dev, file);
+   wait_for_file(path, 5);
+   fd = open(path, O_RDONLY);
+   if (fd == -1) {
+       return val;
+   }
+
+   if (read(fd, buf, 64) > 0) {
+       val = atoi(buf);
+   }
+
+   close(fd);
+   return val;
+}
+
+// Should include kernel header include/mtd/ubi-user.h
+#include <linux/types.h>
+#include <asm/ioctl.h>
+#define UBI_CTRL_IOC_MAGIC 'o'
+#define UBI_IOC_MAGIC 'o'
+#define UBI_VOL_NUM_AUTO (-1)
+#define UBI_DEV_NUM_AUTO (-1)
+#define UBI_IOCATT _IOW(UBI_CTRL_IOC_MAGIC, 64, struct ubi_attach_req)
+#define UBI_IOCDET _IOW(UBI_CTRL_IOC_MAGIC, 65, __s32)
+#define UBI_IOCMKVOL _IOW(UBI_IOC_MAGIC, 0, struct ubi_mkvol_req)
+#define UBI_MAX_VOLUME_NAME 127
+#define UBI_VID_OFFSET_AUTO (0)
+struct ubi_attach_req {
+        __s32 ubi_num;
+        __s32 mtd_num;
+        __s32 vid_hdr_offset;
+        __s8 padding[12];
+};
+
+struct ubi_mkvol_req {
+        __s32 vol_id;
+        __s32 alignment;
+        __s64 bytes;
+        __s8 vol_type;
+        __s8 padding1;
+        __s16 name_len;
+        __s8 padding2[4];
+        char name[UBI_MAX_VOLUME_NAME + 1];
+} __packed;
+
+enum {
+        UBI_DYNAMIC_VOLUME = 3,
+        UBI_STATIC_VOLUME  = 4,
+};
+
+struct ubi_blkcreate_req {
+    __s8  padding[128];
+}  __packed;
+#define UBI_VOL_IOC_MAGIC 'O'
+#define UBI_IOCVOLCRBLK _IOW(UBI_VOL_IOC_MAGIC, 7, struct ubi_blkcreate_req)
+
+
+// Should include kernel header include/mtd/ubi-user.h
+
+int ubi_attach_mtd(const char *name)
+{
+   int ret;
+   int mtd_num, ubi_num, vid_off;
+   int ubi_ctrl, ubi_dev;
+   int vols, avail_lebs, leb_size;
+   char path[128];
+   struct ubi_attach_req attach_req;
+   struct ubi_mkvol_req mkvol_req;
+
+   mtd_num = mtd_name_to_number(name);
+   if (mtd_num == -1) {
+       return -1;
+   }
+
+   for (ubi_num = 0; ubi_num < 4; ubi_num++)
+   {
+       sprintf(path, "/sys/class/ubi/ubi%d/mtd_num", ubi_num);
+       ubi_dev = open(path, O_RDONLY);
+       if (ubi_dev != -1)
+       {
+           ret = read(ubi_dev, path, sizeof(path));
+           close(ubi_dev);
+           if (ret > 0 && mtd_num == atoi(path))
+              return ubi_num;
+       }
+   }
+
+   ubi_ctrl = open(UBI_CTRL_DEV, O_RDONLY);
+   if (ubi_ctrl == -1) {
+       return -1;
+   }
+
+   memset(&attach_req, 0, sizeof(struct ubi_attach_req));
+   attach_req.ubi_num = UBI_DEV_NUM_AUTO;
+   attach_req.mtd_num = mtd_num;
+   attach_req.vid_hdr_offset = UBI_VID_OFFSET_AUTO;
+
+   ret = ioctl(ubi_ctrl, UBI_IOCATT, &attach_req);
+   if (ret == -1) {
+       close(ubi_ctrl);
+       return -1;
+   }
+
+   ubi_num = attach_req.ubi_num;
+   vid_off = attach_req.vid_hdr_offset;
+   vols = ubi_dev_read_int(ubi_num, "volumes_count", -1);
+   if (vols == 0) {
+       sprintf(path, "/dev/ubi%d", ubi_num);
+       ret = wait_for_file(path, 50);
+       ubi_dev = open(path, O_RDONLY);
+       if (ubi_dev == -1) {
+           close(ubi_ctrl);
+           return ubi_num;
+       }
+
+       avail_lebs = ubi_dev_read_int(ubi_num, "avail_eraseblocks", 0);
+       leb_size = ubi_dev_read_int(ubi_num, "eraseblock_size", 0);
+       memset(&mkvol_req, 0, sizeof(struct ubi_mkvol_req));
+       mkvol_req.vol_id = UBI_VOL_NUM_AUTO;
+       mkvol_req.alignment = 1;
+       mkvol_req.bytes = (long long)avail_lebs * leb_size;
+       mkvol_req.vol_type = UBI_DYNAMIC_VOLUME;
+       ret = snprintf(mkvol_req.name, UBI_MAX_VOLUME_NAME + 1, "%s", name);
+       mkvol_req.name_len = ret;
+       ioctl(ubi_dev, UBI_IOCMKVOL, &mkvol_req);
+       close(ubi_dev);
+   }
+   close(ubi_ctrl);
+   return ubi_num;
+}
+
+int ubi_detach_dev(int dev)
+{
+   int ret, ubi_ctrl;
+
+   ubi_ctrl = open(UBI_CTRL_DEV, O_RDONLY);
+   if (ubi_ctrl == -1) {
+       return -1;
+   }
+
+   ret = ioctl(ubi_ctrl, UBI_IOCDET, &dev);
+   close(ubi_ctrl);
+   return ret;
+}
+
+#ifdef MTK_FTL_SUPPORT
+int ftl_attach_ubi(int ubi_num)
+{
+   int err = 0;
+   int ubi_vol;
+   char tmp[25];
+   sprintf(tmp, "/dev/ubi%d_0", ubi_num);
+   ubi_vol = open(tmp, O_RDWR);
+   err = ioctl(ubi_vol, UBI_IOCVOLCRBLK, NULL);
+
+   if (err) {
+       if (errno == ENOSYS)
+           ERROR("MTK FTL is not present in the system");
+       if (errno == ENOTTY)
+           ERROR("MTK FTL not supported (check your kernel version)");
+       ERROR("cannot create block device %d\n", err);
+       goto out_close;
+   }
+
+   close(ubi_vol);
+   return 0;
+
+out_close:
+   close(ubi_vol);
+   return -1;
+}
+#endif
+#endif
+

@@ -268,7 +268,7 @@ int Looper::pollInner(int timeoutMillis) {
         if (errno == EINTR) {
             goto Done;
         }
-        ALOGW("Poll failed with an unexpected error: %s", strerror(errno));
+        // ALOGW("Poll failed with an unexpected error: %s", strerror(errno));
         result = POLL_ERROR;
         goto Done;
     }

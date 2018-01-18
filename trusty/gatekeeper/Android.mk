@@ -20,6 +20,8 @@
 # to only building on ARM if they include assembly. Individual makefiles
 # are responsible for having their own logic, for fine-grained control.
 
+ifeq ($(strip $(MTK_GOOGLE_TRUSTY_SUPPORT)), yes)
+
 LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
@@ -45,6 +47,9 @@ LOCAL_MODULE_TAGS := optional
 
 # Symlink gatekeeper.trusty.so -> gatekeeper.<device>.so so libhardware can find it.
 LOCAL_POST_INSTALL_CMD = \
-    $(hide) ln -sf $(notdir $(LOCAL_INSTALLED_MODULE)) $(dir $(LOCAL_INSTALLED_MODULE))gatekeeper.$(TARGET_DEVICE).so
+    $(hide) ln -sf $(notdir $(LOCAL_INSTALLED_MODULE)) $(dir $(LOCAL_INSTALLED_MODULE))gatekeeper.$(TARGET_DEVICE).so ; \
+	ln -sf $(notdir $(LOCAL_INSTALLED_MODULE)) $(dir $(LOCAL_INSTALLED_MODULE))gatekeeper.$(TARGET_BOARD_PLATFORM).so
 
 include $(BUILD_SHARED_LIBRARY)
+
+endif

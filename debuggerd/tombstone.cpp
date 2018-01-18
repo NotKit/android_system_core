@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012-2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -167,13 +172,10 @@ static const char* get_sigcode(int signo, int code) {
 static void dump_header_info(log_t* log) {
   char fingerprint[PROPERTY_VALUE_MAX];
   char revision[PROPERTY_VALUE_MAX];
-  char cm_version[PROPERTY_VALUE_MAX];
 
-  property_get("ro.cm.version", cm_version, "unknown");
   property_get("ro.build.fingerprint", fingerprint, "unknown");
   property_get("ro.revision", revision, "unknown");
 
-  _LOG(log, logtype::HEADER, "LineageOS Version: '%s'\n", cm_version);
   _LOG(log, logtype::HEADER, "Build fingerprint: '%s'\n", fingerprint);
   _LOG(log, logtype::HEADER, "Revision: '%s'\n", revision);
   _LOG(log, logtype::HEADER, "ABI: '%s'\n", ABI_STRING);

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,11 +29,24 @@ __BEGIN_DECLS
 
 #define INFO(x...)    KLOG_INFO("fs_mgr", x)
 #define WARNING(x...) KLOG_WARNING("fs_mgr", x)
+#define NOTICE(x...)  KLOG_NOTICE("fs_mgr", x)
 #define ERROR(x...)   KLOG_ERROR("fs_mgr", x)
 
 #define CRYPTO_TMPFS_OPTIONS "size=256m,mode=0771,uid=1000,gid=1000"
 
+#ifdef FSMGR_FPGA_EARLY_PORTING
+/*
+ * Enlarge timeout value because FPGA speed is very slow.
+ *
+ * Timeout requirement in fpga platform is about 100 seconds
+ * by real measurement in some chips.
+ *
+ * Use more tolerable timeout value: 200 as the solution.
+ */
+#define WAIT_TIMEOUT 200
+#else
 #define WAIT_TIMEOUT 20
+#endif
 
 /* fstab has the following format:
  *
@@ -85,8 +103,9 @@ __BEGIN_DECLS
 #define MF_FORCEFDEORFBE 0x10000
 #define MF_LATEMOUNT    0x20000
 #define MF_NOFAIL       0x40000
-#define MF_VERIFYATBOOT 0x80000
-#define MF_ZRAMSTREAMS  0x100000
+#ifdef MTK_FSTAB_FLAGS
+#define MF_RESIZE       0x100000
+#endif
 
 #define DM_BUF_SIZE 4096
 

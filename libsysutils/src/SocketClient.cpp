@@ -10,6 +10,7 @@
 
 #define LOG_TAG "SocketClient"
 #include <cutils/log.h>
+#include <string.h>
 
 #include <sysutils/SocketClient.h>
 
@@ -157,6 +158,8 @@ int SocketClient::sendData(const void *data, int len) {
 
     pthread_mutex_lock(&mWriteMutex);
     int rc = sendDataLockedv(vec, 1);
+    if (strlen((char *)data) > 0)
+        SLOGD("SocketClient sendData done: %s", (unsigned char *)data);
     pthread_mutex_unlock(&mWriteMutex);
 
     return rc;

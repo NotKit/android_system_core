@@ -1,16 +1,21 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2008, The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); 
- * you may not use this file except in compliance with the License. 
- * You may obtain a copy of the License at 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0 
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software 
- * distributed under the License is distributed on an "AS IS" BASIS, 
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- * See the License for the specific language governing permissions and 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
  * limitations under the License.
  */
 
@@ -37,6 +42,7 @@
 #include <linux/ipv6_route.h>
 #include <linux/rtnetlink.h>
 #include <linux/sockios.h>
+#include <linux/un.h>
 
 #include "netutils/ifc.h"
 
@@ -51,9 +57,11 @@
 #define ALOGW printf
 #endif
 
+#include <fcntl.h>
 #if defined(__ANDROID__)
 /* SIOCKILLADDR is an Android extension. */
 #define SIOCKILLADDR 0x8939
+#define SIOCKILLSOCK 0x893a
 #endif
 
 static int ifc_ctl_sock = -1;
@@ -62,9 +70,10 @@ static pthread_mutex_t ifc_sock_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static pthread_mutex_t ifc_sock6_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 void printerr(char *fmt, ...);
 
-#define DBG 0
+#define DBG 1
 #define INET_ADDRLEN 4
 #define INET6_ADDRLEN 16
+const char ipv6_proc_path[] = "/proc/sys/net/ipv6/conf";
 
 in_addr_t prefixLengthToIpv4Netmask(int prefix_length)
 {
@@ -135,7 +144,7 @@ int ifc_init(void)
     }
 
     ret = ifc_ctl_sock < 0 ? -1 : 0;
-    if (DBG) printerr("ifc_init_returning %d", ret);
+    if (0) printerr("ifc_init_returning %d", ret);
     return ret;
 }
 
@@ -153,7 +162,7 @@ int ifc_init6(void)
 
 void ifc_close(void)
 {
-    if (DBG) printerr("ifc_close");
+    if (0) printerr("ifc_close");
     if (ifc_ctl_sock != -1) {
         (void)close(ifc_ctl_sock);
         ifc_ctl_sock = -1;
@@ -173,7 +182,8 @@ void ifc_close6(void)
 static void ifc_init_ifr(const char *name, struct ifreq *ifr)
 {
     memset(ifr, 0, sizeof(struct ifreq));
-    strlcpy(ifr->ifr_name, name, IFNAMSIZ);
+    strncpy(ifr->ifr_name, name, IFNAMSIZ);
+    ifr->ifr_name[IFNAMSIZ - 1] = 0;
 }
 
 int ifc_get_hwaddr(const char *name, void *ptr)
@@ -419,6 +429,7 @@ int ifc_clear_ipv6_addresses(const char *name) {
     }
 
     fclose(f);
+    ALOGD("ifc_clear_ipv6_addresses return %d", lasterror);
     return lasterror;
 }
 
@@ -435,6 +446,7 @@ void ifc_clear_ipv4_addresses(const char *name) {
             ifc_set_addr(name, 0);
     }
     ifc_close();
+    ALOGD("ifc_clear_ipv4_addresses return");
 }
 
 /*
@@ -624,26 +636,23 @@ int ifc_disable(const char *ifname)
 int ifc_reset_connections(const char *ifname, const int reset_mask)
 {
 #if defined(__ANDROID__)
-    int result = 0, success;
+    int result, success;
     in_addr_t myaddr = 0;
     struct ifreq ifr;
     struct in6_ifreq ifr6;
-    int ctl_sock = -1;
 
     if (reset_mask & RESET_IPV4_ADDRESSES) {
         /* IPv4. Clear connections on the IP address. */
-        ctl_sock = socket(AF_INET, SOCK_DGRAM, 0);
-        if (ctl_sock >= 0) {
-            if (!(reset_mask & RESET_IGNORE_INTERFACE_ADDRESS)) {
-                ifc_get_info(ifname, &myaddr, NULL, NULL);
-            }
-            ifc_init_ifr(ifname, &ifr);
-            init_sockaddr_in(&ifr.ifr_addr, myaddr);
-            result = ioctl(ctl_sock, SIOCKILLADDR,  &ifr);
-            close(ctl_sock);
-        } else {
-            result = -1;
+        ifc_init();
+        if (!(reset_mask & RESET_IGNORE_INTERFACE_ADDRESS)) {
+            ifc_get_info(ifname, &myaddr, NULL, NULL);
         }
+        ifc_init_ifr(ifname, &ifr);
+        init_sockaddr_in(&ifr.ifr_addr, myaddr);
+        result = ioctl(ifc_ctl_sock, SIOCKILLADDR,  &ifr);
+        ifc_close();
+    } else {
+        result = 0;
     }
 
     if (reset_mask & RESET_IPV6_ADDRESSES) {
@@ -653,18 +662,14 @@ int ifc_reset_connections(const char *ifname, const int reset_mask)
          * So we clear all unused IPv6 connections on the device by specifying an
          * empty IPv6 address.
          */
-        ctl_sock = socket(AF_INET6, SOCK_DGRAM, 0);
+        ifc_init6();
         // This implicitly specifies an address of ::, i.e., kill all IPv6 sockets.
         memset(&ifr6, 0, sizeof(ifr6));
-        if (ctl_sock >= 0) {
-            success = ioctl(ctl_sock, SIOCKILLADDR,  &ifr6);
-            if (result == 0) {
-                result = success;
-            }
-            close(ctl_sock);
-        } else {
-            result = -1;
+        success = ioctl(ifc_ctl_sock6, SIOCKILLADDR,  &ifr6);
+        if (result == 0) {
+            result = success;
         }
+        ifc_close6();
     }
 
     return result;
@@ -732,8 +737,422 @@ ifc_configure(const char *ifname,
     property_set(dns_prop_name, dns1 ? ipaddr_to_string(dns1) : "");
     snprintf(dns_prop_name, sizeof(dns_prop_name), "net.%s.dns2", ifname);
     property_set(dns_prop_name, dns2 ? ipaddr_to_string(dns2) : "");
-    snprintf(dns_prop_name, sizeof(dns_prop_name), "net.%s.gw", ifname);
-    property_set(dns_prop_name, gateway ? ipaddr_to_string(gateway) : "");
 
     return 0;
 }
+
+int ifc_reset_connection_by_uid(int uid, int error)
+{
+#ifdef HAVE_ANDROID_OS
+
+    int tcp_ctl_sock;
+    int result = -1;
+    struct uid_err uid_e;
+
+	uid_e.appuid = uid;
+	uid_e.errorNum = error;
+
+    tcp_ctl_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (tcp_ctl_sock < 0) {
+        printerr("socket() failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if(uid_e.appuid < 0){
+        ALOGE("ifc_reset_connection_by_uid, invalide uid: %d", uid_e.appuid);
+        close(tcp_ctl_sock);
+        return -1;
+    }
+
+    ALOGD("ifc_reset_connection_by_uid, appuid = %d, error = %d ",
+		      uid_e.appuid, uid_e.errorNum);
+    result = ioctl(tcp_ctl_sock, SIOCKILLSOCK, &uid_e);
+    if(result < 0)
+        ALOGE("ifc_reset_connection_by_uid, result= %d, error =%s ", result, strerror(errno));
+
+        close(tcp_ctl_sock);
+    ALOGD("ifc_reset_connection_by_uid, result= %d ",result);
+    return result;
+#else
+    return 0;
+#endif
+}
+
+int ifc_enable_allmc(const char *ifname)
+{
+	int result;
+
+	ifc_init();
+	result = ifc_set_flags(ifname, IFF_ALLMULTI, 0);
+	ifc_close();
+
+	ALOGD("ifc_enable_allmc(%s) = %d", ifname, result);
+	return result;
+}
+
+int ifc_disable_allmc(const char *ifname)
+{
+	int result;
+
+	ifc_init();
+	result = ifc_set_flags(ifname, 0, IFF_ALLMULTI);
+	ifc_close();
+
+	ALOGD("ifc_disable_allmc(%s) = %d", ifname, result);
+	return result;
+}
+int ifc_is_up(const char *name, unsigned *isup)
+{
+    struct ifreq ifr;
+    ifc_init_ifr(name, &ifr);
+
+    if(ioctl(ifc_ctl_sock, SIOCGIFFLAGS, &ifr) < 0) {
+        printerr("ifc_is_up get flags error:%d(%s)", errno, strerror(errno));
+        return -1;
+    }
+    if(ifr.ifr_flags & IFF_UP)
+        *isup = 1;
+    else
+        *isup = 0;
+
+    return 0;
+}
+
+static int ifc_netd_sock_init(void)
+{
+    int ifc_netd_sock;
+    const int one = 1;
+    struct sockaddr_un netd_addr;
+    int res = 0;
+
+        ifc_netd_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (ifc_netd_sock < 0) {
+            printerr("ifc_netd_sock_init: create socket failed");
+            return -1;
+        }
+
+        res = setsockopt(ifc_netd_sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        if (res < 0) {
+           printerr("setsockopt failed\n");
+           close(ifc_netd_sock);
+           return -1;
+        }
+        memset(&netd_addr, 0, sizeof(netd_addr));
+        netd_addr.sun_family = AF_UNIX;
+        strlcpy(netd_addr.sun_path, "/dev/socket/netd",
+            sizeof(netd_addr.sun_path));
+        if (TEMP_FAILURE_RETRY(connect(ifc_netd_sock,
+                     (const struct sockaddr*) &netd_addr,
+                     sizeof(netd_addr))) != 0) {
+            printerr("ifc_netd_sock_init: connect to netd failed, fd=%d, err: %d(%s)",
+                ifc_netd_sock, errno, strerror(errno));
+            close(ifc_netd_sock);
+            return -1;
+        }
+
+    if (DBG) printerr("ifc_netd_sock_init fd=%d", ifc_netd_sock);
+    return ifc_netd_sock;
+}
+
+/*do not call this function in netd*/
+int ifc_set_throttle(const char *ifname, int rxKbps, int txKbps)
+{
+    FILE* fnetd = NULL;
+    int ret = -1;
+    int seq = 1;
+    char rcv_buf[24];
+	int nread = 0;
+	int netd_sock = 0;
+
+    ALOGD("enter ifc_set_throttle: ifname = %s, rx = %d kbs, tx = %d kbs", ifname, rxKbps, txKbps);
+
+    netd_sock = ifc_netd_sock_init();
+    if(netd_sock <= 0)
+        goto exit;
+
+    // Send the request.
+    fnetd = fdopen(netd_sock, "r+");
+	if(fnetd == NULL){
+		ALOGE("open netd socket failed, err:%d(%s)", errno, strerror(errno));
+		goto exit;
+	}
+    if (fprintf(fnetd, "%d interface setthrottle %s %d %d", seq, ifname, rxKbps, txKbps) < 0) {
+        goto exit;
+    }
+    // literal NULL byte at end, required by FrameworkListener
+    if (fputc(0, fnetd) == EOF ||
+        fflush(fnetd) != 0) {
+        goto exit;
+    }
+    ret = 0;
+
+	//Todo: read the whole response from netd
+	nread = fread(rcv_buf, 1, 20, fnetd);
+	rcv_buf[23] = 0;
+	ALOGD("response: %s", rcv_buf);
+exit:
+    if (fnetd != NULL) {
+        fclose(fnetd);
+    }
+    return ret;
+}
+
+/*do not call this function in netd*/
+int ifc_set_fwmark_rule(const char *ifname, int mark, int add)
+{
+    FILE* fnetd = NULL;
+    int ret = -1;
+    int seq = 2;
+    char rcv_buf[24];
+    int nread = 0;
+    const char* op;
+    int netd_sock = 0;
+
+    if (add) {
+        op = "add";
+    } else {
+        op = "remove";
+    }
+    ALOGD("enter ifc_set_fwmark_rule: ifname = %s, mark = %d, op = %s", ifname, mark, op);
+
+    netd_sock = ifc_netd_sock_init();
+    if(netd_sock <= 0)
+        goto exit;
+
+    // Send the request.
+    fnetd = fdopen(netd_sock, "r+");
+     if(fnetd == NULL){
+           ALOGE("open netd socket failed, err:%d(%s)", errno, strerror(errno));
+           goto exit;
+       }
+    if (fprintf(fnetd, "%d network fwmark %s %s %d", seq, op, ifname, mark) < 0) {
+        goto exit;
+    }
+    // literal NULL byte at end, required by FrameworkListener
+    if (fputc(0, fnetd) == EOF ||
+        fflush(fnetd) != 0) {
+        goto exit;
+    }
+    ret = 0;
+
+        //Todo: read the whole response from netd
+        nread = fread(rcv_buf, 1, 20, fnetd);
+        rcv_buf[23] = 0;
+        ALOGD("ifc_set_fwmark_rule response: %s", rcv_buf);
+exit:
+    if (fnetd != NULL) {
+        fclose(fnetd);
+    }
+    return ret;
+}
+
+/*do not call this function in netd
+  * 0  disable nsiot firewall
+  * 1  enable nsiot firewall
+  */
+int ifc_set_nsiot_firewall(int flag)
+{
+    FILE* fnetd = NULL;
+    int ret = -1;
+    int seq = 2;
+    char rcv_buf[24];
+    int nread = 0;
+    const char* op;
+    int netd_sock = 0;
+    if (flag) {
+        op = "set_nsiot_firewall";
+    } else {
+        op = "clear_nsiot_firewall";
+    }
+    ALOGD("enter ifc_set_nsiot_firewall: op = %s",op);
+
+    netd_sock = ifc_netd_sock_init();
+    if(netd_sock <= 0)
+        goto exit;
+
+    // Send the request.
+    fnetd = fdopen(netd_sock, "r+");
+      if(fnetd == NULL){
+          ALOGE("open netd socket failed, err:%d(%s)", errno, strerror(errno));
+          goto exit;
+    }
+    if (fprintf(fnetd, "%d firewall %s ", seq, op) < 0) {
+        goto exit;
+    }
+    // literal NULL byte at end, required by FrameworkListener
+    if (fputc(0, fnetd) == EOF ||
+        fflush(fnetd) != 0) {
+        goto exit;
+    }
+    ret = 0;
+
+       //Todo: read the whole response from netd
+        nread = fread(rcv_buf, 1, 20, fnetd);
+        rcv_buf[23] = 0;
+        ALOGD("ifc_set_nsiot_firewall response: %s", rcv_buf);
+exit:
+    if (fnetd != NULL) {
+        fclose(fnetd);
+    }
+
+    return ret;
+}
+
+#define SIOCSTXQSTATE (SIOCDEVPRIVATE + 0)  //start/stop ccmni tx queue
+#define SIOCSCCMNICFG (SIOCDEVPRIVATE + 1)  //configure ccmni/md remapping
+
+int ifc_set_txq_state(const char *ifname, int state)
+{
+    struct ifreq ifr;
+    int ret, ctl_sock;
+
+    memset(&ifr, 0, sizeof(struct ifreq));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ - 1] = 0;
+    ifr.ifr_ifru.ifru_ivalue = state;
+
+    ctl_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if(ctl_sock < 0){
+    ALOGE("create ctl socket failed\n");
+      return -1;
+    }
+    ret = ioctl(ctl_sock, SIOCSTXQSTATE, &ifr);
+    if(ret < 0)
+       ALOGE("ifc_set_txq_state failed, err:%d(%s)\n", errno, strerror(errno));
+    else
+       ALOGI("ifc_set_txq_state as %d, ret: %d\n", state, ret);
+
+    close(ctl_sock);
+
+    return ret;
+}
+
+int ifc_ccmni_md_cfg(const char *ifname, int md_id)
+{
+    struct ifreq ifr;
+    int ret = 0;
+    int ctl_sock = 0;
+
+    ifc_init_ifr(ifname, &ifr);
+    ifr.ifr_ifru.ifru_ivalue = md_id;
+
+    ctl_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if(ctl_sock < 0){
+        printerr("ifc_ccmni_md_cfg: create ctl socket failed\n");
+        return -1;
+    }
+
+    if(ioctl(ctl_sock, SIOCSCCMNICFG, &ifr) < 0) {
+        printerr("ifc_ccmni_md_configure(ifname=%s, md_id=%d) error:%d(%s)", \
+             ifname, md_id, errno, strerror(errno));
+       ret = -1;
+    } else {
+        printerr("ifc_ccmni_md_configure(ifname=%s, md_id=%d) OK", ifname, md_id);
+    }
+
+    close(ctl_sock);
+    return ret;
+}
+
+static int setEnableIPv6(char* ifname, int on) {
+    char *path;
+    const char *value = on ? "0" : "1";
+    unsigned int size = strlen(value);
+
+    //full path: proc/sys/net/ipv6/conf/ifname/disalbe_ipv6
+    asprintf(&path, "%s/%s/%s", ipv6_proc_path, ifname, "disable_ipv6");
+    ALOGE("setEnableIPv6: set path %s to %s", path, value);
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        ALOGE("Failed to open %s: %s", path, strerror(errno));
+        return -1;
+    }
+
+    if (write(fd, value, size) != size) {
+        ALOGE("Failed to write %s: %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    free(path);
+    return 0;
+}
+
+static int setIPv6DefaultRoute(char* ifname, int on) {
+    char *path;
+    const char *value = on ? "1" : "0";
+    unsigned int size = strlen(value);
+
+    //full path: /proc/sys/net/ipv6/conf/ccmni0/accept_ra_defrtr
+    asprintf(&path, "%s/%s/%s", ipv6_proc_path, ifname, "accept_ra_defrtr");
+    ALOGE("setIPv6DefaultRoute: set path %s to %s", path, value);
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        ALOGE("Failed to open %s: %s", path, strerror(errno));
+        return -1;
+    }
+
+    if (write(fd, value, size) != size) {
+        ALOGE("Failed to write %s: %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    free(path);
+    return 0;
+}
+
+void clear_prefix_prop(char *buff)
+{
+    char prefix_prop_name[PROPERTY_KEY_MAX];
+    char plen_prop_name[PROPERTY_KEY_MAX];
+    char prop_value[PROPERTY_VALUE_MAX] = {'\0'};
+    snprintf(prefix_prop_name, sizeof(prefix_prop_name),
+                    "net.ipv6.%s.prefix",buff);
+    if (property_get("net.ipv6.tether", prop_value, NULL)) {
+        if(0 == strcmp(prop_value, (buff))){
+        if (property_get(prefix_prop_name, prop_value, NULL)) {
+#ifndef MTK_IPV6_TETHER_PD_MODE
+               property_set("net.ipv6.lastprefix", prop_value);
+#endif
+               ALOGD("set last prefix as %s\n", prop_value);
+        }
+        } else {
+            ALOGW("%s is not a tether interface\n", buff);
+        }
+    }
+
+    if (property_get(prefix_prop_name, prop_value, NULL)) {
+        property_set(prefix_prop_name, "");
+        ALOGD("Clear %s Done",prefix_prop_name);
+    }
+    snprintf(plen_prop_name, sizeof(plen_prop_name),
+            "net.ipv6.%s.plen", buff);
+    if (property_get(plen_prop_name, prop_value, NULL)) {
+        property_set(plen_prop_name, "");
+    }
+}
+
+
+
+int ifc_ipv6_trigger_rs(char *ifname){
+    ALOGE("ifc_ipv6_irat_triger_rs clear prefix prop %s",ifname);
+    clear_prefix_prop(ifname);
+    int errNo = setEnableIPv6(ifname, 0);
+     if (errNo < 0) {
+         ALOGE("ifc_ipv6_irat_triger_rs disable interface %s IPv6 fail %d",ifname, errNo);
+     }
+     errNo = setEnableIPv6(ifname, 1);
+     if (errNo < 0) {
+         ALOGE("ifc_ipv6_irat_triger_rs enalbe interface %s IPv6 fail %d",ifname, errNo);
+     }
+
+    //set accept_ra_defrtr 1
+    errNo = setIPv6DefaultRoute(ifname,1);
+    if (errNo < 0) {
+         ALOGE("ifc_ipv6_irat_triger_rs enalbe interface %s accept_ra_defrtr fail %d",ifname, errNo);
+     }
+
+    return 0;
+}
+
